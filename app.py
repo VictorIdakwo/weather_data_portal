@@ -34,13 +34,18 @@ from utils.export_handler import (
 
 # Load Earth Engine credentials (for MODIS and CHIRPS)
 def load_ee_credentials():
-    """Load Earth Engine service account credentials"""
+    """Load Earth Engine service account credentials from Streamlit secrets or local file"""
     try:
-        # Try loading from ee_credentials.json
+        # First, try Streamlit Cloud secrets (for deployment)
+        if hasattr(st, 'secrets') and 'gee_credentials' in st.secrets:
+            return dict(st.secrets['gee_credentials'])
+        
+        # Fallback to local file (for development)
         creds_path = "ee_credentials.json"
         if os.path.exists(creds_path):
             with open(creds_path, 'r') as f:
                 return json.load(f)
+        
         return None
     except Exception as e:
         st.sidebar.warning(f"Could not load Earth Engine credentials: {str(e)}")
