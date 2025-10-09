@@ -37,8 +37,12 @@ def load_ee_credentials():
     """Load Earth Engine service account credentials from Streamlit secrets or local file"""
     try:
         # First, try Streamlit Cloud secrets (for deployment)
-        if hasattr(st, 'secrets') and 'gee_credentials' in st.secrets:
-            return dict(st.secrets['gee_credentials'])
+        try:
+            if hasattr(st, 'secrets') and 'gee_credentials' in st.secrets:
+                return dict(st.secrets['gee_credentials'])
+        except Exception:
+            # Silently continue if secrets not available (expected for local dev)
+            pass
         
         # Fallback to local file (for development)
         creds_path = "ee_credentials.json"
@@ -48,7 +52,9 @@ def load_ee_credentials():
         
         return None
     except Exception as e:
-        st.sidebar.warning(f"Could not load Earth Engine credentials: {str(e)}")
+        # Only show warning for actual errors, not missing secrets
+        if "secrets" not in str(e).lower():
+            st.sidebar.warning(f"Could not load Earth Engine credentials: {str(e)}")
         return None
 
 ee_credentials = load_ee_credentials()
