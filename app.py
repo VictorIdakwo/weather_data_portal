@@ -428,7 +428,8 @@ if locations_list:
     st.success(f"✅ {len(locations_list)} location(s) selected")
     
     with st.expander("View Selected Locations"):
-        df_locations = pd.DataFrame(locations_list)
+        # locations_list format: [(lat, lon, name), ...]
+        df_locations = pd.DataFrame(locations_list, columns=["Latitude", "Longitude", "Location Name"])
         st.dataframe(df_locations)
     
     st.session_state.selected_locations = locations_list
@@ -529,7 +530,8 @@ if st.button("Fetch Weather Data", type="primary", disabled=not (selected_params
         st.error("❌ Please select at least one location")
     else:
         # Prepare location tuples (lat, lon)
-        location_coords = [(loc["lat"], loc["lon"]) for loc in locations_list]
+        # locations_list format: [(lat, lon, name), ...]
+        location_coords = [(loc[0], loc[1]) for loc in locations_list]
         
         # Show progress
         with st.spinner(f"Fetching data from {selected_source}..."):
@@ -610,7 +612,8 @@ if st.button("Fetch Weather Data", type="primary", disabled=not (selected_params
                 
                 if df is not None and not df.empty:
                     # Add location names to the dataframe
-                    location_map = {i: loc["name"] for i, loc in enumerate(locations_list)}
+                    # locations_list format: [(lat, lon, name), ...]
+                    location_map = {i: loc[2] for i, loc in enumerate(locations_list)}
                     if "location_id" in df.columns:
                         df["location_name"] = df["location_id"].map(location_map)
                     
