@@ -40,6 +40,16 @@ ENV/
 # Streamlit
 .streamlit/
 
+# Credentials & Secrets (IMPORTANT!)
+ee_credentials.json
+*credentials*.json
+streamlit_secrets.toml
+.secrets.toml
+
+# Test & Conversion Scripts
+test_credentials_loading.py
+convert_credentials_to_toml.py
+
 # Data files
 *.csv
 *.xlsx
@@ -54,6 +64,9 @@ ENV/
 *.nc
 *.tif
 *.gz
+
+# Analytics exports
+analytics_export_*.xlsx
 
 # Temporary files
 temp/

@@ -1,0 +1,71 @@
+🌍 Excited to Announce: Weather Data Portal for Africa! 🌍
+
+I'm thrilled to share my latest project - a comprehensive weather and climate data platform covering all 54 African countries with unprecedented granularity!
+
+🎯 WHAT IT DOES:
+A one-stop platform for accessing authoritative weather and climate data from multiple sources including NASA POWER, Google Earth Engine (MODIS, CHIRPS, ERA5-Land), and OpenWeather API.
+
+🗺️ GEOGRAPHIC COVERAGE:
+✅ All 54 African countries
+✅ 400+ administrative divisions (States, Regions, Provinces, Counties)
+✅ 300+ Nigerian LGAs - complete coverage of all 37 states
+✅ 3-level hierarchy - from continental to neighborhood-level data
+
+🛰️ DATA SOURCES:
+• NASA POWER - Global weather and climate parameters
+• MODIS - Satellite-based land surface temperature & vegetation
+• CHIRPS - Precipitation data via Google Earth Engine
+• ERA5-Land - High-resolution climate reanalysis
+• OpenWeather API - Real-time weather data
+
+💡 KEY FEATURES:
+• Multi-country simultaneous data retrieval
+• Flexible temporal resolution (daily, monthly, annual)
+• Multiple export formats (CSV, Excel, GeoJSON, Shapefile)
+• Custom shapefile upload support
+• Sub-national granularity (Lagos LGAs, Nairobi Sub-counties, etc.)
+
+🎓 USE CASES:
+📊 Climate research and analysis
+🌾 Agricultural planning and monitoring
+🏥 Public health studies (heat stress, vector-borne diseases)
+🏙️ Urban planning and heat island analysis
+📈 Environmental impact assessments
+
+🔧 TECH STACK:
+Python | Streamlit | Google Earth Engine | NASA APIs | GeoPandas | Pandas
+
+🌟 WHAT MAKES IT SPECIAL:
+• Designed specifically for African data needs
+• Respects regional administrative structures
+• Covers countries often overlooked in commercial solutions
+• Free and open-source
+• Neighborhood-level granularity for major cities
+
+📊 BY THE NUMBERS:
+• 54 Countries
+• 400+ Divisions
+• 400+ Sub-divisions
+• 5 Data Sources
+• 10,600+ Lines of Code
+• 100% African Coverage
+
+🚀 LIVE & OPEN SOURCE:
+The portal is deployed on Streamlit Cloud and available for anyone to use. Full source code is on GitHub for researchers, developers, and organizations.
+
+GitHub: https://github.com/VictorIdakwo/weather_data_portal
+
+💬 LOOKING FOR COLLABORATIONS WITH:
+• Climate researchers across Africa
+• Public health organizations
+• Agricultural development agencies
+• Urban planners and policymakers
+• Data scientists working on African climate data
+
+Whether you're studying heat stress in Lagos, monitoring drought in the Sahel, analyzing rainfall patterns in East Africa, or planning climate-resilient infrastructure - this tool is for you!
+
+Let's leverage data to build a more climate-resilient Africa! 🌍
+
+---
+
+#ClimateData #AfricaTech #OpenSource #WeatherData #Python #DataScience #ClimateChange #AfricanDevelopment #GeospatialAnalysis #RemoteSensing #GoogleEarthEngine #NASA #PublicHealth #UrbanPlanning #Agriculture #ClimateResilience #TechForGood #Innovation #SustainableDevelopment #Nigeria #Kenya #SouthAfrica #GIS #Streamlit

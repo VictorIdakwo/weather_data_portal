@@ -31,6 +31,7 @@ from utils.export_handler import (
     get_export_filename,
     get_export_mime_type,
 )
+from utils.analytics import init_analytics
 
 # Load Earth Engine credentials (for MODIS and CHIRPS)
 def load_ee_credentials():
@@ -59,6 +60,9 @@ def load_ee_credentials():
 
 ee_credentials = load_ee_credentials()
 
+# Initialize analytics
+analytics = init_analytics()
+
 # Page configuration
 st.set_page_config(
     page_title="Weather Data Portal",
@@ -85,6 +89,11 @@ if "fetched_data" not in st.session_state:
     st.session_state.fetched_data = None
 if "selected_locations" not in st.session_state:
     st.session_state.selected_locations = None
+if "current_data_source" not in st.session_state:
+    st.session_state.current_data_source = None
+
+# Track page visit (once per session)
+analytics.track_visit()
 
 # Sidebar for data source and parameters
 st.sidebar.header("📊 Data Source Selection")
@@ -618,6 +627,17 @@ if st.button("Fetch Weather Data", type="primary", disabled=not (selected_params
                         df["location_name"] = df["location_id"].map(location_map)
                     
                     st.session_state.fetched_data = df
+                    st.session_state.current_data_source = selected_source
+                    
+                    # Track data source usage
+                    date_range = f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
+                    analytics.track_data_source_usage(
+                        data_source=selected_source,
+                        parameters=selected_params,
+                        locations_count=len(locations_list),
+                        date_range=date_range
+                    )
+                    
                     st.success(f"✅ Data fetched successfully! {len(df)} records retrieved.")
                     st.balloons()
                 else:
@@ -719,13 +739,21 @@ if st.session_state.fetched_data is not None:
         st.caption("Tabular format for Excel/Python/R")
         try:
             csv_data = export_to_csv(df)
-            st.download_button(
+            if st.download_button(
                 label="📥 Download CSV",
                 data=csv_data,
                 file_name=f"{base_filename}.csv",
                 mime="text/csv",
                 use_container_width=True,
-            )
+                key="download_csv",
+            ):
+                # Track download
+                analytics.track_download(
+                    data_source=st.session_state.get('current_data_source', 'Unknown'),
+                    export_format='CSV',
+                    rows_count=len(df),
+                    locations_count=df['location_id'].nunique() if 'location_id' in df.columns else 0
+                )
         except Exception as e:
             st.error(f"Error: {str(e)}")
     
@@ -736,13 +764,20 @@ if st.session_state.fetched_data is not None:
             zip_path = export_to_shapefile(df)
             with open(zip_path, "rb") as f:
                 shapefile_data = f.read()
-            st.download_button(
+            if st.download_button(
                 label="📥 Download Shapefile",
                 data=shapefile_data,
                 file_name=f"{base_filename}.zip",
                 mime="application/zip",
                 use_container_width=True,
-            )
+                key="download_shapefile",
+            ):
+                analytics.track_download(
+                    data_source=st.session_state.get('current_data_source', 'Unknown'),
+                    export_format='Shapefile',
+                    rows_count=len(df),
+                    locations_count=df['location_id'].nunique() if 'location_id' in df.columns else 0
+                )
         except Exception as e:
             st.error(f"Error: {str(e)}")
     
@@ -751,13 +786,20 @@ if st.session_state.fetched_data is not None:
         st.caption("For web apps and APIs")
         try:
             json_data = export_to_json(df)
-            st.download_button(
+            if st.download_button(
                 label="📥 Download JSON",
                 data=json_data,
                 file_name=f"{base_filename}.json",
                 mime="application/json",
                 use_container_width=True,
-            )
+                key="download_json",
+            ):
+                analytics.track_download(
+                    data_source=st.session_state.get('current_data_source', 'Unknown'),
+                    export_format='JSON',
+                    rows_count=len(df),
+                    locations_count=df['location_id'].nunique() if 'location_id' in df.columns else 0
+                )
         except Exception as e:
             st.error(f"Error: {str(e)}")
     
@@ -769,13 +811,20 @@ if st.session_state.fetched_data is not None:
             st.markdown("**GeoJSON** (Geographic JSON)")
             try:
                 geojson_data = export_to_geojson(df)
-                st.download_button(
+                if st.download_button(
                     label="📥 Download GeoJSON",
                     data=geojson_data,
                     file_name=f"{base_filename}.geojson",
                     mime="application/geo+json",
                     use_container_width=True,
-                )
+                    key="download_geojson",
+                ):
+                    analytics.track_download(
+                        data_source=st.session_state.get('current_data_source', 'Unknown'),
+                        export_format='GeoJSON',
+                        rows_count=len(df),
+                        locations_count=df['location_id'].nunique() if 'location_id' in df.columns else 0
+                    )
             except Exception as e:
                 st.error(f"Error: {str(e)}")
         
@@ -783,13 +832,20 @@ if st.session_state.fetched_data is not None:
             st.markdown("**Excel** (XLSX)")
             try:
                 excel_data = export_to_excel(df)
-                st.download_button(
+                if st.download_button(
                     label="📥 Download Excel",
                     data=excel_data,
                     file_name=f"{base_filename}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
-                )
+                    key="download_excel",
+                ):
+                    analytics.track_download(
+                        data_source=st.session_state.get('current_data_source', 'Unknown'),
+                        export_format='Excel',
+                        rows_count=len(df),
+                        locations_count=df['location_id'].nunique() if 'location_id' in df.columns else 0
+                    )
             except Exception as e:
                 st.error(f"Error: {str(e)}")
 
