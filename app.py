@@ -256,7 +256,7 @@ with col2:
     end_date = st.date_input(
         "End Date",
         value=default_end,
-        min_value=datetime(2000, 1, 1),
+        min_value=datetime(1990, 1, 1),
         max_value=max_date,
         help="Select the end date for data retrieval"
     )
