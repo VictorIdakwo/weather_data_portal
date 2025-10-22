@@ -247,7 +247,7 @@ with col1:
     start_date = st.date_input(
         "Start Date",
         value=default_start,
-        min_value=datetime(2000, 1, 1),
+        min_value=datetime(1990, 1, 1),
         max_value=max_date,
         help="Select the start date for data retrieval"
     )
