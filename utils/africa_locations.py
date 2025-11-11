@@ -487,6 +487,19 @@ AFRICA_DIVISIONS = {
         "Ziguinchor": (12.5833, -16.2731),
     },
     
+    # Mali - Regions (8 regions + 1 district)
+    "Mali": {
+        "Bamako": (12.6392, -8.0029),  # Capital District
+        "Kayes": (14.4464, -11.4333),
+        "Koulikoro": (12.8625, -7.5594),
+        "Sikasso": (11.3175, -5.6667),
+        "Ségou": (13.4317, -6.2633),
+        "Mopti": (14.4948, -4.1939),
+        "Tombouctou": (16.7666, -3.0026),
+        "Gao": (16.2710, -0.0418),
+        "Kidal": (18.4411, 1.4078),
+    },
+    
     # Mozambique - Provinces (11 total)
     "Mozambique": {
         "Maputo City": (-25.9655, 32.5832),
@@ -979,6 +992,82 @@ AFRICA_SUB_DIVISIONS = {
             "Ashaiman Municipal": (5.6950, -0.0300),
             "Ledzokuku": (5.6300, -0.0800),
             "Kpone Katamanso": (5.7000, 0.0500),
+        },
+    },
+    
+    # Mali - Cercles (major communes/districts by region)
+    "Mali": {
+        "Bamako": {
+            "Commune I": (12.6533, -8.0000),
+            "Commune II": (12.6367, -7.9917),
+            "Commune III": (12.6300, -7.9833),
+            "Commune IV": (12.6200, -7.9750),
+            "Commune V": (12.6100, -7.9667),
+            "Commune VI": (12.6000, -7.9583),
+        },
+        "Kayes": {
+            "Kayes Cercle": (14.4464, -11.4333),
+            "Bafoulabé": (13.8061, -10.8317),
+            "Kita": (13.0333, -9.4833),
+            "Nioro du Sahel": (15.2333, -9.5833),
+            "Diéma": (14.5833, -9.2167),
+            "Yélimané": (15.1333, -10.5667),
+            "Oussoubidiagna": (14.7167, -11.7167),
+        },
+        "Koulikoro": {
+            "Kati": (12.7444, -8.0722),
+            "Kolokani": (13.5667, -8.0333),
+            "Nara": (15.1667, -7.2833),
+            "Banamba": (13.5500, -7.4500),
+            "Kangaba": (11.9333, -8.4167),
+            "Dioïla": (12.4833, -6.8000),
+            "Fana": (12.7333, -5.9000),
+        },
+        "Sikasso": {
+            "Sikasso Cercle": (11.3175, -5.6667),
+            "Bougouni": (11.4167, -7.4833),
+            "Yanfolila": (11.1667, -8.2000),
+            "Kolondiéba": (11.0833, -6.8833),
+            "Kadiolo": (10.5500, -5.8000),
+            "Koutiala": (12.3900, -5.4600),
+            "Yorosso": (12.3667, -4.7833),
+        },
+        "Ségou": {
+            "Ségou Cercle": (13.4317, -6.2633),
+            "Bla": (12.2889, -5.2403),
+            "Baraouéli": (12.7833, -6.5333),
+            "Macina": (13.9667, -5.3667),
+            "Tominian": (12.7667, -3.9333),
+            "San": (13.3000, -4.9000),
+            "Niono": (14.2500, -5.9833),
+        },
+        "Mopti": {
+            "Mopti Cercle": (14.4948, -4.1939),
+            "Djenné": (13.9061, -4.5533),
+            "Tenenkou": (14.4500, -4.9167),
+            "Youwarou": (15.9667, -2.8833),
+            "Douentza": (15.0000, -2.9500),
+            "Koro": (14.1500, -3.0833),
+            "Bandiagara": (14.3500, -3.6167),
+        },
+        "Tombouctou": {
+            "Tombouctou Cercle": (16.7666, -3.0026),
+            "Diré": (16.3167, -3.4000),
+            "Niafunké": (16.1333, -3.9833),
+            "Goundam": (16.4167, -3.6667),
+            "Gourma-Rharous": (16.8833, -1.9500),
+        },
+        "Gao": {
+            "Gao Cercle": (16.2710, -0.0418),
+            "Bourem": (17.0000, -0.3667),
+            "Ansongo": (15.6667, 0.5000),
+            "Ménaka": (15.9167, 2.4000),
+        },
+        "Kidal": {
+            "Kidal Cercle": (18.4411, 1.4078),
+            "Abeibara": (19.1667, 0.2833),
+            "Tessalit": (20.2000, 1.0167),
+            "Tin-Essako": (19.6667, -0.1167),
         },
     },
     
