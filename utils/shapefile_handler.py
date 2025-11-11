@@ -193,27 +193,35 @@ def create_shapefile_zip(shapefile_path: str) -> str:
     return zip_path
 
 
-def validate_shapefile_locations(locations: List[Dict]) -> Tuple[bool, str]:
+def validate_shapefile_locations(locations: List[Dict]) -> tuple:
     """
-    Validate that extracted locations are within reasonable bounds for Nigeria.
+    Validate if locations are within reasonable bounds for Africa.
     
     Args:
-        locations: List of location dicts
+        locations: List of location dictionaries
     
     Returns:
-        Tuple of (is_valid, error_message)
+        (is_valid, error_message)
     """
-    # Nigeria approximate bounds
-    min_lat, max_lat = 4.0, 14.0
-    min_lon, max_lon = 2.5, 15.0
+    # Africa approximate bounds (expanded to cover entire continent)
+    min_lat, max_lat = -35.0, 37.0  # Cape Agulhas to Mediterranean
+    min_lon, max_lon = -25.0, 52.0  # Atlantic to Indian Ocean
     
-    for loc in locations:
+    out_of_bounds = []
+    
+    for i, loc in enumerate(locations):
         lat, lon = loc["lat"], loc["lon"]
         
         if not (min_lat <= lat <= max_lat):
-            return False, f"Latitude {lat} is outside Nigeria bounds ({min_lat}, {max_lat})"
+            out_of_bounds.append(f"Location {i+1} (lat {lat:.2f}): outside Africa latitude bounds ({min_lat}, {max_lat})")
         
         if not (min_lon <= lon <= max_lon):
-            return False, f"Longitude {lon} is outside Nigeria bounds ({min_lon}, {max_lon})"
+            out_of_bounds.append(f"Location {i+1} (lon {lon:.2f}): outside Africa longitude bounds ({min_lon}, {max_lon})")
+    
+    if out_of_bounds:
+        error_msg = "Some locations are outside Africa bounds:\n" + "\n".join(out_of_bounds[:5])
+        if len(out_of_bounds) > 5:
+            error_msg += f"\n... and {len(out_of_bounds) - 5} more locations"
+        return False, error_msg
     
     return True, ""

@@ -17,10 +17,15 @@ from utils.africa_locations import (
     get_selected_locations as get_africa_locations
 )
 from utils.shapefile_handler import (
-    extract_shapefile_from_zip,
     read_shapefile,
     extract_locations_from_shapefile,
     validate_shapefile_locations,
+    extract_shapefile_from_zip,
+)
+from utils.kml_handler import (
+    read_kml_file,
+    extract_locations_from_kml,
+    validate_kml_locations,
 )
 from utils.export_handler import (
     export_to_csv,
@@ -289,14 +294,13 @@ elif source_key == "era5":
     ERA5 now uses the same Earth Engine credentials as MODIS/CHIRPS.
     No separate CDS account or token needed.
     """)
-
 # Main content area
 st.markdown("<h2 style='text-align: center;'>📍 Location Selection</h2>", unsafe_allow_html=True)
 
 # Location selection method
 location_method = st.radio(
     "Choose location selection method:",
-    options=["African Countries/Divisions", "Upload Shapefile"],
+    options=["African Countries/Divisions", "Upload Shapefile", "Upload KML/KMZ"],
     horizontal=True,
 )
 
@@ -392,7 +396,7 @@ if location_method == "African Countries/Divisions":
             # Use capital cities for all selected countries
             locations_list = get_africa_locations(countries=selected_countries)
 
-else:  # Upload Shapefile
+elif location_method == "Upload Shapefile":
     st.subheader("Upload Shapefile")
     st.markdown("""
     Upload a ZIP file containing your shapefile (.shp, .shx, .dbf, .prj files).
@@ -422,15 +426,71 @@ else:  # Upload Shapefile
                 st.dataframe(gdf.head(10))
             
             # Extract locations
-            locations_list = extract_locations_from_shapefile(gdf)
+            locations_dict = extract_locations_from_shapefile(gdf)
             
             # Validate locations
-            is_valid, error_msg = validate_shapefile_locations(locations_list)
+            is_valid, error_msg = validate_shapefile_locations(locations_dict)
             if not is_valid:
                 st.warning(f"⚠️ Warning: {error_msg}")
             
+            # Convert to expected tuple format: (lat, lon, name)
+            locations_list = [(loc["lat"], loc["lon"], loc["name"]) for loc in locations_dict]
+            
         except Exception as e:
             st.error(f"❌ Error processing shapefile: {str(e)}")
+
+else:  # Upload KML/KMZ
+    st.subheader("Upload KML/KMZ")
+    st.markdown("""
+    Upload a KML or KMZ file containing location data.
+    - **KML**: Direct XML file with location data
+    - **KMZ**: Zipped KML file (Google Earth format)
+    - For **polygon** geometries: centroid will be extracted
+    - For **point** geometries: points will be used directly
+    """)
+    
+    uploaded_file = st.file_uploader(
+        "Choose a KML or KMZ file",
+        type=["kml", "kmz"],
+        help="Upload a KML or KMZ file with location data"
+    )
+    
+    if uploaded_file is not None:
+        try:
+            # Save uploaded file to temporary location
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
+                tmp_file.write(uploaded_file.read())
+                kml_path = tmp_file.name
+            
+            # Read KML/KMZ file
+            gdf = read_kml_file(kml_path)
+            
+            # Display file info
+            st.success(f"✅ KML/KMZ loaded successfully! Found {len(gdf)} features.")
+            
+            # Show preview
+            with st.expander("Preview KML/KMZ Data"):
+                st.dataframe(gdf.head(10))
+            
+            # Extract locations
+            locations_dict = extract_locations_from_kml(gdf)
+            
+            # Validate locations
+            is_valid, error_msg = validate_kml_locations(locations_dict)
+            if not is_valid:
+                st.warning(f"⚠️ Warning: {error_msg}")
+            
+            # Convert to expected tuple format: (lat, lon, name)
+            locations_list = [(loc["lat"], loc["lon"], loc["name"]) for loc in locations_dict]
+            
+            # Clean up temporary file
+            os.unlink(kml_path)
+            
+        except Exception as e:
+            st.error(f"❌ Error processing KML/KMZ file: {str(e)}")
+            # Clean up temporary file if it exists
+            if 'kml_path' in locals() and os.path.exists(kml_path):
+                os.unlink(kml_path)
 
 # Display selected locations
 if locations_list:
