@@ -514,6 +514,31 @@ AFRICA_DIVISIONS = {
         "Cabo Delgado": (-12.3400, 40.3569),
         "Niassa": (-13.2678, 36.5636),
     },
+    
+    # Togo - Regions (5 total)
+    "Togo": {
+        "Maritime": (6.2167, 1.2500),  # Lomé region
+        "Plateaux": (7.0000, 1.1667),
+        "Centrale": (8.5167, 1.0000),
+        "Kara": (9.5500, 1.1833),
+        "Savanes": (10.8667, 0.5000),
+    },
+    
+    # Benin - Departments (12 total) 
+    "Benin": {
+        "Littoral": (6.4969, 2.6289),  # Cotonou/Porto-Novo
+        "Atlantique": (6.4500, 2.2500),
+        "Ouémé": (6.7500, 2.6167),
+        "Plateau": (7.2500, 2.4167),
+        "Mono": (6.5000, 1.7500),
+        "Couffo": (7.0000, 2.0000),
+        "Zou": (7.2500, 2.2500),
+        "Collines": (7.8833, 2.3333),
+        "Donga": (9.0000, 1.5500),
+        "Borgou": (9.7500, 2.7500),
+        "Alibori": (11.1167, 2.8833),
+        "Atacora": (10.5000, 1.5000),
+    },
 }
 
 
@@ -1082,6 +1107,251 @@ AFRICA_SUB_DIVISIONS = {
             "Giza": (30.0131, 31.2089),
             "6th of October City": (29.9537, 31.0127),
             "New Cairo": (30.0272, 31.4913),
+        },
+    },
+    
+    # Ghana - Districts (expanded to all 16 regions)
+    "Ghana": {
+        "Greater Accra": {
+            "Accra Metropolitan": (5.6037, -0.1870),
+            "Tema Metropolitan": (5.6698, -0.0166),
+            "Ga South Municipal": (5.5800, -0.2500),
+            "Ga Central Municipal": (5.6800, -0.2700),
+            "Ga West Municipal": (5.7200, -0.3500),
+            "Ga East Municipal": (5.7500, -0.1800),
+            "Adentan Municipal": (5.7100, -0.1700),
+            "Ashaiman Municipal": (5.6950, -0.0300),
+            "Ledzokuku": (5.6300, -0.0800),
+            "Kpone Katamanso": (5.7000, 0.0500),
+        },
+        "Ashanti": {
+            "Kumasi Metropolitan": (6.7460, -1.5230),
+            "Obuasi Municipal": (6.2028, -1.6703),
+            "Ejisu": (6.7333, -1.3667),
+            "Juaben Municipal": (6.7167, -1.3333),
+            "Bosomtwe": (6.5167, -1.4333),
+            "Atwima Kwanwoma": (6.8167, -1.7000),
+            "Kwabre East": (6.8500, -1.4500),
+            "Afigya Kwabre South": (6.7833, -1.4167),
+        },
+        "Western": {
+            "Sekondi-Takoradi Metropolitan": (4.9344, -1.7892),
+            "Shama": (5.0167, -1.6500),
+            "Ahanta West": (5.2833, -2.2500),
+            "Nzema East Municipal": (5.1000, -2.7500),
+            "Ellembelle": (5.0500, -2.8833),
+            "Wassa East": (5.7833, -1.9167),
+            "Tarkwa-Nsuaem Municipal": (5.3000, -2.0000),
+        },
+        "Eastern": {
+            "New-Juaben Municipal": (6.0891, -0.8656),
+            "Akuapim North": (5.8833, -0.1167),
+            "West Akim": (6.2000, -0.7333),
+            "East Akim": (6.1333, -0.6333),
+            "Fanteakwa South": (6.0167, -0.4833),
+            "Suhum": (6.0500, -0.4500),
+            "Yilo Krobo": (6.1000, -0.0833),
+        },
+        "Northern": {
+            "Tamale Metropolitan": (9.4007, -0.8400),
+            "Sagnarigu Municipal": (9.4667, -0.9333),
+            "Tolon": (9.5000, -1.0167),
+            "Kumbungu": (9.5667, -0.8667),
+            "Savelugu Municipal": (9.6333, -0.8167),
+            "Zabzugu": (9.3167, -0.3833),
+        },
+        "Central": {
+            "Cape Coast Metropolitan": (5.1311, -1.2464),
+            "Komenda-Edina-Eguafo-Abirem Municipal": (5.0833, -1.3000),
+            "Abura-Asebu-Kwamankese": (5.3000, -1.1833),
+            "Mfantsiman Municipal": (5.4667, -0.8333),
+            "Awutu Senya East Municipal": (5.5833, -0.5167),
+            "Effutu Municipal": (5.6833, -0.6167),
+        },
+    },
+    
+    # Togo - Prefectures (major districts by region)
+    "Togo": {
+        "Maritime": {
+            "Golfe": (6.1256, 1.2318),  # Lomé
+            "Lacs": (6.3333, 1.5000),
+            "Vo": (6.3167, 1.4833),
+            "Yoto": (6.5167, 1.3500),
+            "Zio": (6.4333, 1.2167),
+            "Bas-Mono": (6.2500, 1.1667),
+        },
+        "Plateaux": {
+            "Kloto": (6.9167, 0.6167),
+            "Agou": (6.8500, 0.7833),
+            "Danyi": (7.0000, 0.5000),
+            "Kpélé": (7.1167, 1.0000),
+            "Akébou": (7.5167, 1.1833),
+            "Moyen-Mono": (7.3333, 1.2500),
+            "Ogou": (7.7833, 1.5167),
+        },
+        "Centrale": {
+            "Tchamba": (8.2167, 1.4167),
+            "Sotouboua": (8.5667, 0.9833),
+            "Tchaoudjo": (8.8833, 1.2667),
+            "Blitta": (8.3333, 0.7667),
+        },
+        "Kara": {
+            "Kozah": (9.5500, 1.1833),
+            "Binah": (9.7000, 1.0667),
+            "Bassar": (9.2500, 0.7833),
+            "Dankpen": (9.8833, 1.3500),
+            "Doufelgou": (9.7333, 0.4833),
+        },
+        "Savanes": {
+            "Tandjouaré": (10.7833, 0.7833),
+            "Tone": (11.0000, 0.3333),
+            "Cinkassé": (11.1167, 0.3833),
+            "Kpendjal": (10.9167, 1.0167),
+        },
+    },
+    
+    # Benin - Communes (major municipalities by department)
+    "Benin": {
+        "Littoral": {
+            "Cotonou": (6.3654, 2.4183),
+        },
+        "Atlantique": {
+            "Abomey-Calavi": (6.4500, 2.3500),
+            "Allada": (6.6667, 2.1500),
+            "Kpomassè": (6.3333, 2.1167),
+            "Ouidah": (6.3578, 2.0889),
+            "Sô-Ava": (6.4167, 2.4667),
+            "Toffo": (6.5833, 2.0833),
+            "Tori-Bossito": (6.5167, 1.9500),
+            "Zè": (6.5000, 2.3333),
+        },
+        "Ouémé": {
+            "Porto-Novo": (6.4969, 2.6289),
+            "Aguégués": (6.5833, 2.4833),
+            "Akpro-Missérété": (6.5500, 2.6833),
+            "Avrankou": (6.4333, 2.8167),
+            "Bonou": (6.9000, 2.4500),
+            "Dangbo": (6.5833, 2.5333),
+        },
+        "Zou": {
+            "Abomey": (7.1833, 1.9833),
+            "Bohicon": (7.1833, 2.0667),
+            "Cové": (7.2167, 2.2833),
+            "Djidja": (7.3667, 1.9333),
+            "Ouinhi": (7.0833, 2.4833),
+            "Za-Kpota": (7.1333, 2.3333),
+            "Zangnanado": (7.2833, 2.3500),
+            "Zogbodomey": (7.1000, 2.2500),
+        },
+        "Borgou": {
+            "Parakou": (9.3500, 2.6167),
+            "Bembèrèkè": (10.2167, 2.6667),
+            "Kalalé": (10.2833, 3.3833),
+            "N'Dali": (9.8667, 2.7167),
+            "Nikki": (9.9333, 3.2000),
+            "Pèrèrè": (9.1833, 2.3667),
+            "Sinendé": (10.0000, 2.4167),
+            "Tchaourou": (8.8833, 2.5833),
+        },
+        "Mono": {
+            "Lokossa": (6.6389, 1.7167),
+            "Athiémé": (6.5667, 1.6667),
+            "Bopa": (6.7833, 1.7833),
+            "Comé": (6.4000, 1.8833),
+            "Grand-Popo": (6.2833, 1.8167),
+            "Houéyogbé": (6.5833, 1.8000),
+        },
+        "Atacora": {
+            "Natitingou": (10.3000, 1.3833),
+            "Boukoumbé": (10.1833, 1.1000),
+            "Cobly": (10.3000, 1.0167),
+            "Kérou": (10.8167, 1.9167),
+            "Kouandé": (10.3333, 1.6833),
+            "Matéri": (10.0667, 1.2667),
+            "Péhunco": (10.1167, 1.5833),
+            "Tanguiéta": (10.6167, 1.2667),
+            "Toucountouna": (10.5833, 1.4000),
+        },
+    },
+    
+    # Cameroon - Divisions (major districts by region)
+    "Cameroon": {
+        "Centre": {
+            "Mfoundi": (3.8480, 11.5021),  # Yaoundé
+            "Mefou-et-Afamba": (3.7500, 11.7000),
+            "Nyong-et-Kéllé": (3.5000, 12.0000),
+            "Nyong-et-Mfoumou": (3.2000, 12.3000),
+            "Nyong-et-So'o": (3.3333, 11.4167),
+            "Mbam-et-Inoubou": (4.6000, 11.1667),
+            "Mbam-et-Kim": (4.8333, 11.5000),
+            "Méfou-et-Akono": (3.6167, 11.4000),
+            "Lékié": (4.1000, 11.3500),
+        },
+        "Littoral": {
+            "Wouri": (4.0511, 9.7679),  # Douala
+            "Nkam": (4.6167, 9.9333),
+            "Sanaga-Maritime": (3.5000, 9.8333),
+            "Mungo": (4.6833, 9.4500),
+        },
+        "West": {
+            "Bamboutos": (5.4667, 10.1000),
+            "Haut-Nkam": (5.4667, 10.4833),
+            "Hauts-Plateaux": (5.8333, 10.1667),
+            "Koung-Khi": (5.8000, 10.5000),
+            "Menoua": (5.5000, 10.3333),
+            "Mifi": (5.4769, 10.4178),  # Bafoussam
+            "Ndé": (5.1833, 10.7500),
+            "Noun": (5.6667, 10.9000),
+        },
+        "Northwest": {
+            "Mezam": (5.9667, 10.1500),  # Bamenda
+            "Boyo": (6.2500, 10.2500),
+            "Bui": (6.2833, 10.5000),
+            "Donga-Mantung": (6.4167, 10.7833),
+            "Menchum": (6.5833, 10.0500),
+            "Momo": (6.1333, 9.8000),
+            "Ngo-Ketunjia": (6.0833, 10.4167),
+        },
+        "Southwest": {
+            "Fako": (4.1561, 9.2325),  # Limbe/Buea
+            "Koupé-Manengouba": (4.8833, 9.8333),
+            "Lebialem": (5.5000, 9.8333),
+            "Manyu": (5.8000, 9.2500),
+            "Meme": (4.9667, 9.0833),
+            "Ndian": (4.7000, 8.7333),
+        },
+        "Far North": {
+            "Diamaré": (10.5917, 14.2123),  # Maroua
+            "Logone-et-Chari": (12.0833, 14.8333),
+            "Mayo-Danay": (10.7500, 14.9167),
+            "Mayo-Kani": (10.1667, 14.4167),
+            "Mayo-Sava": (10.8333, 14.5833),
+            "Mayo-Tsanaga": (10.8333, 13.8333),
+        },
+        "North": {
+            "Bénoué": (8.9806, 13.3869),  # Garoua
+            "Faro": (8.3500, 12.6333),
+            "Mayo-Louti": (9.3000, 13.7333),
+            "Mayo-Rey": (9.2000, 14.1667),
+        },
+        "Adamawa": {
+            "Djérem": (6.4500, 14.1833),
+            "Faro-et-Déo": (7.3697, 13.5844),  # Ngaoundéré
+            "Mayo-Banyo": (6.7500, 11.8167),
+            "Mbéré": (7.3667, 14.1833),
+            "Vina": (7.2167, 13.5667),
+        },
+        "East": {
+            "Haut-Nyong": (4.0000, 15.0000),
+            "Kadey": (4.1667, 14.1667),
+            "Lom-et-Djérem": (5.6667, 13.6667),
+            "Boumba-et-Ngoko": (3.0000, 15.5000),
+        },
+        "South": {
+            "Dja-et-Lobo": (3.2500, 12.7500),
+            "Mvila": (2.5000, 11.5000),
+            "Océan": (2.9261, 11.5214),  # Kribi
+            "Vallée-du-Ntem": (2.1667, 10.5000),
         },
     },
 }
