@@ -694,32 +694,47 @@ if st.button("Fetch Weather Data", type="primary", disabled=not (selected_params
 if st.session_state.fetched_data is not None:
     st.header("📊 Retrieved Data")
     
-    df = st.session_state.fetched_data
+    df = st.session_state.fetched_data.copy()
+    
+    # Fix datetime columns for Streamlit display (PyArrow compatibility)
+    for col in df.columns:
+        if col in ['date', 'datetime'] or 'date' in col.lower():
+            if df[col].dtype == 'object':
+                try:
+                    # Convert to consistent datetime format
+                    df[col] = pd.to_datetime(df[col], errors='coerce')
+                    # Convert to string for display to avoid PyArrow issues
+                    df[col] = df[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+                    df[col] = df[col].str.replace(' 00:00:00', '')  # Remove time if midnight
+                except:
+                    # If conversion fails, convert to string
+                    df[col] = df[col].astype(str)
     
     # Data preview
     st.subheader("Data Preview")
     st.dataframe(df.head(20))
     
-    # Data summary
+    # Data summary (use original data for accurate metrics)
+    original_df = st.session_state.fetched_data
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Total Records", len(df))
+        st.metric("Total Records", len(original_df))
     with col2:
-        st.metric("Locations", df["location_id"].nunique())
+        st.metric("Locations", original_df["location_id"].nunique())
     with col3:
-        st.metric("Parameters", len([col for col in df.columns if col not in ["date", "datetime", "latitude", "longitude", "location_id", "location_name"]]))
+        st.metric("Parameters", len([col for col in original_df.columns if col not in ["date", "datetime", "latitude", "longitude", "location_id", "location_name"]]))
     with col4:
         # Display actual date range from data
-        date_col = "datetime" if "datetime" in df.columns else "date"
-        if date_col in df.columns:
-            min_date = pd.to_datetime(df[date_col]).min()
-            max_date = pd.to_datetime(df[date_col]).max()
+        date_col = "datetime" if "datetime" in original_df.columns else "date"
+        if date_col in original_df.columns:
+            min_date = pd.to_datetime(original_df[date_col]).min()
+            max_date = pd.to_datetime(original_df[date_col]).max()
             date_span = (max_date - min_date).days + 1
             st.metric("Date Span", f"{date_span} days")
     
-    # Data statistics
+    # Data statistics (use original data)
     with st.expander("View Data Statistics"):
-        st.dataframe(df.describe())
+        st.dataframe(original_df.describe())
     
     # Export section
     st.header("💾 Export Data")
@@ -738,7 +753,9 @@ if st.session_state.fetched_data is not None:
         st.subheader("📊 CSV")
         st.caption("Tabular format for Excel/Python/R")
         try:
-            csv_data = export_to_csv(df)
+            # Use original data for export (not display-formatted)
+            original_df = st.session_state.fetched_data
+            csv_data = export_to_csv(original_df)
             if st.download_button(
                 label="📥 Download CSV",
                 data=csv_data,
@@ -751,8 +768,8 @@ if st.session_state.fetched_data is not None:
                 analytics.track_download(
                     data_source=st.session_state.get('current_data_source', 'Unknown'),
                     export_format='CSV',
-                    rows_count=len(df),
-                    locations_count=df['location_id'].nunique() if 'location_id' in df.columns else 0
+                    rows_count=len(original_df),
+                    locations_count=original_df['location_id'].nunique() if 'location_id' in original_df.columns else 0
                 )
         except Exception as e:
             st.error(f"Error: {str(e)}")
@@ -761,7 +778,8 @@ if st.session_state.fetched_data is not None:
         st.subheader("🗺️ Shapefile")
         st.caption("For GIS applications (QGIS/ArcGIS)")
         try:
-            zip_path = export_to_shapefile(df)
+            # Use original data for export (not display-formatted)
+            zip_path = export_to_shapefile(original_df)
             with open(zip_path, "rb") as f:
                 shapefile_data = f.read()
             if st.download_button(
