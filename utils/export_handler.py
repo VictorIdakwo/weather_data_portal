@@ -17,6 +17,10 @@ def export_to_csv(df: pd.DataFrame) -> bytes:
     Returns:
         CSV data as bytes
     """
+    # Debug: Print DataFrame info
+    print(f"CSV Export - DataFrame shape: {df.shape}")
+    print(f"CSV Export - DataFrame columns: {list(df.columns)}")
+    
     return df.to_csv(index=False).encode("utf-8")
 
 
@@ -73,12 +77,19 @@ def export_to_shapefile(df: pd.DataFrame, lat_col: str = "latitude", lon_col: st
     Returns:
         Path to ZIP file containing shapefile
     """
+    # Debug: Print DataFrame info
+    print(f"Shapefile Export - DataFrame shape: {df.shape}")
+    print(f"Shapefile Export - DataFrame columns: {list(df.columns)}")
+    
     # Create temporary directory
     temp_dir = tempfile.mkdtemp()
     output_path = os.path.join(temp_dir, "export")
     
     # Create GeoDataFrame
     gdf = create_geodataframe_from_data(df, lat_col, lon_col)
+    
+    # Debug: Print GeoDataFrame info
+    print(f"Shapefile Export - GeoDataFrame shape: {gdf.shape}")
     
     # Shapefile has column name length limit of 10 characters
     # Truncate column names if needed
