@@ -93,47 +93,164 @@ class Analytics:
         return st.session_state.analytics_session_id
     
     def _get_user_location(self):
-        """Try to get user's location using IP geolocation with multiple fallbacks"""
+        """Try to get user's location using IP geolocation with multiple fallbacks and accuracy checks"""
         import requests
         
-        # Try multiple free services in order
+        # Try multiple services with different strengths
         services = [
             {
-                'url': 'https://ipwhois.app/json/',
+                'name': 'ipinfo',
+                'url': 'https://ipinfo.io/json',
                 'country_key': 'country',
-                'city_key': 'city'
+                'city_key': 'city',
+                'priority': 1  # Most accurate for general use
             },
             {
+                'name': 'ipapi',
                 'url': 'http://ip-api.com/json/',
                 'country_key': 'country',
-                'city_key': 'city'
+                'city_key': 'city', 
+                'priority': 2  # Good accuracy, shows ISP info
             },
             {
+                'name': 'ipwhois',
+                'url': 'https://ipwhois.app/json/',
+                'country_key': 'country',
+                'city_key': 'city',
+                'priority': 3
+            },
+            {
+                'name': 'ipapi_co',
                 'url': 'https://ipapi.co/json/',
                 'country_key': 'country_name',
-                'city_key': 'city'
+                'city_key': 'city',
+                'priority': 4
             }
         ]
         
+        results = []
+        
+        # Try all services and collect results
         for service in services:
             try:
                 response = requests.get(service['url'], timeout=3)
                 if response.status_code == 200:
                     data = response.json()
                     # Check if response has error
-                    if data.get('error'):
+                    if data.get('error') or data.get('status') == 'fail':
                         continue
                     
                     country = data.get(service['country_key'], 'Unknown')
                     city = data.get(service['city_key'], 'Unknown')
                     
-                    if country != 'Unknown' and country:
-                        return country, city
+                    if country and country != 'Unknown':
+                        results.append({
+                            'service': service['name'],
+                            'country': country,
+                            'city': city,
+                            'priority': service['priority'],
+                            'data': data  # Keep full response for debugging
+                        })
+                        
+                        # If we get a high-priority accurate result, use it
+                        if service['priority'] <= 2:
+                            # Add some validation for known accurate services
+                            if service['name'] == 'ipinfo' or service['name'] == 'ipapi':
+                                return country, city
+            
             except Exception as e:
                 # Try next service
                 continue
         
+        # If we have multiple results, try to pick the most consistent one
+        if results:
+            # Sort by priority (lower number = higher priority)
+            results.sort(key=lambda x: x['priority'])
+            
+            # Use the highest priority result
+            best_result = results[0]
+            
+            # Debug info for tracking location detection issues
+            if len(results) > 1:
+                # Log discrepancies for analysis (only in debug mode)
+                countries = [r['country'] for r in results]
+                if len(set(countries)) > 1:
+                    # Multiple different countries detected - this indicates potential issues
+                    service_countries = [f"{r['service']}:{r['country']}" for r in results[:3]]
+                    debug_info = f"Location mismatch: {', '.join(service_countries)}"
+                    # Store in session state for potential display in debug mode
+                    if 'location_debug' not in st.session_state:
+                        st.session_state.location_debug = []
+                    st.session_state.location_debug.append(debug_info)
+            
+            return best_result['country'], best_result['city']
+        
         return "Unknown", "Unknown"
+    
+    def debug_location_detection(self):
+        """
+        Debug function to test location detection and show results from all services
+        Returns detailed results for troubleshooting
+        """
+        import requests
+        
+        services = [
+            {
+                'name': 'ipinfo',
+                'url': 'https://ipinfo.io/json',
+                'country_key': 'country',
+                'city_key': 'city'
+            },
+            {
+                'name': 'ipapi',
+                'url': 'http://ip-api.com/json/',
+                'country_key': 'country',
+                'city_key': 'city'
+            },
+            {
+                'name': 'ipwhois',
+                'url': 'https://ipwhois.app/json/',
+                'country_key': 'country',
+                'city_key': 'city'
+            },
+            {
+                'name': 'ipapi_co',
+                'url': 'https://ipapi.co/json/',
+                'country_key': 'country_name',
+                'city_key': 'city'
+            }
+        ]
+        
+        results = {}
+        
+        for service in services:
+            try:
+                response = requests.get(service['url'], timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    country = data.get(service['country_key'], 'Unknown')
+                    city = data.get(service['city_key'], 'Unknown')
+                    
+                    results[service['name']] = {
+                        'success': True,
+                        'country': country,
+                        'city': city,
+                        'ip': data.get('ip', data.get('query', 'Unknown')),
+                        'isp': data.get('isp', data.get('org', 'Unknown')),
+                        'full_data': data
+                    }
+                else:
+                    results[service['name']] = {
+                        'success': False,
+                        'error': f"HTTP {response.status_code}"
+                    }
+            except Exception as e:
+                results[service['name']] = {
+                    'success': False,
+                    'error': str(e)
+                }
+        
+        return results
     
     def track_visit(self):
         """Track a page visit"""
