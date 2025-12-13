@@ -11,6 +11,7 @@ from xml.etree import ElementTree as ET
 import geopandas as gpd
 from shapely.geometry import Point, Polygon
 import pandas as pd
+from .polygon_sampler import sample_polygon_locations, get_sampling_summary
 
 
 def read_kml_file(kml_path: str) -> gpd.GeoDataFrame:
@@ -159,17 +160,32 @@ def parse_kml_xml(kml_path: str) -> gpd.GeoDataFrame:
     return gdf
 
 
-def extract_locations_from_kml(gdf: gpd.GeoDataFrame) -> List[Dict]:
+def extract_locations_from_kml(
+    gdf: gpd.GeoDataFrame,
+    use_polygon_sampling: bool = True,
+    grid_spacing_degrees: float = None
+) -> List[Dict]:
     """
     Extract locations from KML GeoDataFrame.
     Similar to shapefile extraction but tailored for KML structure.
     
     Args:
         gdf: GeoDataFrame from KML
+        use_polygon_sampling: If True, sample multiple points within polygons
+        grid_spacing_degrees: Grid spacing for sampling (auto-calculated if None)
     
     Returns:
         List of dicts with 'name', 'lat', 'lon', 'geometry_type', and other attributes
     """
+    
+    # Check if we have any polygons
+    has_polygons = any(geom.geom_type in ['Polygon', 'MultiPolygon'] for geom in gdf.geometry)
+    
+    # Use polygon sampling if requested and polygons exist
+    if use_polygon_sampling and has_polygons:
+        return sample_polygon_locations(gdf, grid_spacing_degrees, include_centroid=True)
+    
+    # Otherwise, use centroid-based approach (legacy)
     locations = []
     
     for idx, row in gdf.iterrows():

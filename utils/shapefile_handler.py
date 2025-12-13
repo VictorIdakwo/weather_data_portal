@@ -5,6 +5,7 @@ from typing import List, Tuple, Dict
 import tempfile
 import os
 import zipfile
+from .polygon_sampler import sample_polygon_locations, get_sampling_summary
 
 def extract_shapefile_from_zip(zip_file) -> str:
     """
@@ -69,18 +70,34 @@ def read_shapefile(file_path: str) -> gpd.GeoDataFrame:
         raise ValueError(f"Error reading shapefile: {str(e)}")
 
 
-def extract_locations_from_shapefile(gdf: gpd.GeoDataFrame) -> List[Dict]:
+def extract_locations_from_shapefile(
+    gdf: gpd.GeoDataFrame, 
+    use_polygon_sampling: bool = True,
+    grid_spacing_degrees: float = None
+) -> List[Dict]:
     """
     Extract locations from shapefile.
     - For point geometries: use the points directly
-    - For polygon geometries: use centroids
+    - For polygon geometries: generate grid sampling points (if use_polygon_sampling=True)
+                            or use centroids (if use_polygon_sampling=False)
     
     Args:
         gdf: GeoDataFrame
+        use_polygon_sampling: If True, sample multiple points within polygons
+        grid_spacing_degrees: Grid spacing for sampling (auto-calculated if None)
     
     Returns:
         List of dicts with 'name', 'lat', 'lon', 'geometry_type', and any other attributes
     """
+    
+    # Check if we have any polygons
+    has_polygons = any(geom.geom_type in ['Polygon', 'MultiPolygon'] for geom in gdf.geometry)
+    
+    # Use polygon sampling if requested and polygons exist
+    if use_polygon_sampling and has_polygons:
+        return sample_polygon_locations(gdf, grid_spacing_degrees, include_centroid=True)
+    
+    # Otherwise, use centroid-based approach (legacy)
     locations = []
     
     for idx, row in gdf.iterrows():

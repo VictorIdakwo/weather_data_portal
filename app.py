@@ -22,6 +22,7 @@ from utils.shapefile_handler import (
     validate_shapefile_locations,
     extract_shapefile_from_zip,
 )
+from utils.polygon_sampler import get_sampling_summary
 from utils.kml_handler import (
     read_kml_file,
     extract_locations_from_kml,
@@ -37,6 +38,13 @@ from utils.export_handler import (
     get_export_mime_type,
 )
 from utils.analytics import init_analytics
+from utils.earth_globe import (
+    create_earth_globe,
+    create_animated_earth_globe,
+    create_location_zoom_globe,
+)
+from utils.satellite_view import create_satellite_map
+from utils.glassmorphism_theme import get_glassmorphism_css
 
 # Load Earth Engine credentials (for MODIS and CHIRPS)
 def load_ee_credentials():
@@ -73,19 +81,23 @@ st.set_page_config(
     page_title="Weather Data Portal",
     page_icon="🌦️",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded"
 )
 
-# Title and description
-st.markdown("<h1 style='text-align: center;'>🌍 Weather Data Portal for Africa</h1>", unsafe_allow_html=True)
+# Apply Glassmorphism Theme
+st.markdown(get_glassmorphism_css(), unsafe_allow_html=True)
+
+# Compact Header with Glassmorphism Design
 st.markdown("""
-<div style='text-align: center;'>
-<p>Download weather and climate data from multiple sources including NASA POWER, OpenWeather API, 
-ERA5-Land, MODIS, and CHIRPS for locations across Africa.</p>
-
-<p><strong>Coverage:</strong> All 54 African countries with their administrative divisions (States, Regions, Provinces, Counties, etc.)</p>
-
-<p><em>Created by <strong>Victor Iko-ojo Idakwo</strong> (RTP, MNITP, MGEOSON)</em></p>
+<div style='text-align: center; padding: 1rem 0 0.5rem 0; margin-bottom: 1rem;'>
+    <h1 style='font-size: 2.2rem; margin-bottom: 0.3rem; line-height: 1.2;'>🌦️ Weather Data Portal for Africa</h1>
+    <p style='font-size: 0.95rem; color: #9ca3af; font-weight: 400; margin: 0.3rem 0;'>
+        Download historical weather data from NASA POWER, OpenWeather, ERA5, MODIS & CHIRPS for African locations
+    </p>
+    <p style='font-size: 0.85rem; color: #6b7280; margin: 0.2rem 0;'>
+        <strong style='color: #9ca3af;'>Coverage:</strong> 54 African countries • All administrative divisions • 
+        <em>By Victor Iko-ojo Idakwo (RTP, MNITP, MGEOSON)</em>
+    </p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -96,6 +108,8 @@ if "selected_locations" not in st.session_state:
     st.session_state.selected_locations = None
 if "current_data_source" not in st.session_state:
     st.session_state.current_data_source = None
+if "uploaded_geodataframe" not in st.session_state:
+    st.session_state.uploaded_geodataframe = None
 
 # Track page visit (once per session)
 analytics.track_visit()
@@ -199,12 +213,14 @@ st.sidebar.subheader("📋 Available Parameters")
 selected_params = []
 
 for category, params in available_params.items():
-    with st.sidebar.expander(f"📁 {category}"):
-        for param_code, param_desc in params.items():
-            # Create unique key by combining source, category, and param_code
-            unique_key = f"param_{source_key}_{category.replace(' ', '_').replace('/', '_')}_{param_code}"
-            if st.checkbox(param_desc, key=unique_key):
-                selected_params.append(param_code)
+    # Use markdown header instead of expander to avoid keyboard arrow text
+    st.sidebar.markdown(f"**📁 {category}**")
+    for param_code, param_desc in params.items():
+        # Create unique key by combining source, category, and param_code
+        unique_key = f"param_{source_key}_{category.replace(' ', '_').replace('/', '_')}_{param_code}"
+        if st.sidebar.checkbox(param_desc, key=unique_key):
+            selected_params.append(param_code)
+    st.sidebar.markdown("---")  # Separator between categories
 
 # Remove duplicates while preserving order
 selected_params = list(dict.fromkeys(selected_params))
@@ -294,8 +310,20 @@ elif source_key == "era5":
     ERA5 now uses the same Earth Engine credentials as MODIS/CHIRPS.
     No separate CDS account or token needed.
     """)
-# Main content area
-st.markdown("<h2 style='text-align: center;'>📍 Location Selection</h2>", unsafe_allow_html=True)
+
+# Location selection with glassmorphism header
+st.markdown("""
+<div style='background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(59, 130, 246, 0.2);
+            border-radius: 12px;
+            padding: 1rem 1.5rem;
+            margin: 1rem 0 0.75rem 0;
+            box-shadow: 0 4px 20px 0 rgba(59, 130, 246, 0.15);'>
+    <h2 style='margin: 0; font-size: 1.5rem; line-height: 1.3;'>📍 Select Locations</h2>
+    <p style='margin: 0.25rem 0 0 0; color: #9ca3af; font-size: 0.9rem;'>Choose your data collection points</p>
+</div>
+""", unsafe_allow_html=True)
 
 # Location selection method
 location_method = st.radio(
@@ -306,33 +334,34 @@ location_method = st.radio(
 
 locations_list = []
 
-if location_method == "African Countries/Divisions":
-    # Get all countries
-    countries = get_countries()
-    
-    # Country selection
-    st.subheader("🌍 Select Countries")
-    selected_countries = st.multiselect(
-        "Choose African countries",
-        options=countries,
-        default=["Nigeria"],
-        help="Select one or more African countries"
-    )
-    
-    if selected_countries:
-        # Division selection for each country
-        st.subheader("📌 Select Administrative Divisions")
+# Create two-column layout: Location Selection (left) and Satellite View (right)
+left_col, right_col = st.columns([1, 1], gap="medium")
+
+with left_col:
+    if location_method == "African Countries/Divisions":
+        # Clear uploaded GeoDataFrame when using African Countries
+        st.session_state.uploaded_geodataframe = None
         
-        selected_divisions = {}
-        selected_sub_divisions = {}
+        # Get all countries
+        countries = get_countries()
         
-        # Create columns for better layout
-        cols = st.columns(2)
+        # Country selection
+        st.subheader("🌍 Select Countries")
+        selected_countries = st.multiselect(
+            "Choose African countries",
+            options=countries,
+            default=["Nigeria"],
+            help="Select one or more African countries"
+        )
         
-        for idx, country in enumerate(selected_countries):
-            col = cols[idx % 2]
+        if selected_countries:
+            # Division selection for each country
+            st.subheader("📌 Select Administrative Divisions")
             
-            with col:
+            selected_divisions = {}
+            selected_sub_divisions = {}
+            
+            for country in selected_countries:
                 # Get division type for this country
                 division_type = get_admin_division_type(country)
                 divisions = get_divisions_for_country(country)
@@ -384,113 +413,174 @@ if location_method == "African Countries/Divisions":
                             st.caption(f"ℹ️ No {sub_div_label}s available for selected {division_type}s")
                 else:
                     st.info(f"ℹ️ {country}: Using capital city (detailed {division_type}s not yet available)")
+            
+            # Get locations based on selection priority: LGAs > States > Capitals
+            if selected_sub_divisions:
+                # User selected specific LGAs
+                locations_list = get_africa_locations(sub_divisions=selected_sub_divisions)
+            elif selected_divisions:
+                # User selected specific divisions (states/regions)
+                locations_list = get_africa_locations(divisions=selected_divisions)
+            else:
+                # Use capital cities for all selected countries
+                locations_list = get_africa_locations(countries=selected_countries)
+
+    elif location_method == "Upload Shapefile":
+        st.subheader("Upload Shapefile")
+        st.markdown("""
+        Upload a ZIP file containing your shapefile (.shp, .shx, .dbf, .prj files).
+        - For **polygon** geometries: centroid will be extracted
+        - For **point** geometries: points will be used directly
+        """)
         
-        # Get locations based on selection priority: LGAs > States > Capitals
-        if selected_sub_divisions:
-            # User selected specific LGAs
-            locations_list = get_africa_locations(sub_divisions=selected_sub_divisions)
-        elif selected_divisions:
-            # User selected specific divisions (states/regions)
-            locations_list = get_africa_locations(divisions=selected_divisions)
-        else:
-            # Use capital cities for all selected countries
-            locations_list = get_africa_locations(countries=selected_countries)
+        uploaded_file = st.file_uploader(
+            "Choose a ZIP file",
+            type=["zip"],
+            help="Upload a ZIP file containing all shapefile components"
+        )
+        
+        if uploaded_file is not None:
+            try:
+                # Extract shapefile from ZIP
+                shp_path = extract_shapefile_from_zip(uploaded_file)
+                
+                # Read shapefile
+                gdf = read_shapefile(shp_path)
+                
+                # Store GeoDataFrame in session state
+                st.session_state.uploaded_geodataframe = gdf
+                
+                # Display shapefile info
+                st.success(f"✅ Shapefile loaded successfully! Found {len(gdf)} features.")
+                
+                # Show preview
+                with st.expander("Preview Shapefile Data"):
+                    st.dataframe(gdf.head(10))
+                
+                # Extract locations with polygon sampling
+                locations_dict = extract_locations_from_shapefile(gdf, use_polygon_sampling=True)
+                
+                # Show sampling summary
+                summary = get_sampling_summary(locations_dict)
+                if summary['sampling_points'] > 0:
+                    st.info(f"""
+                    📊 **Polygon Sampling Active**
+                    - **{summary['num_polygons']}** polygon(s) detected
+                    - **{summary['sampling_points']}** sampling points generated
+                    - **{summary['avg_points_per_polygon']:.1f}** points per polygon (average)
+                    - Weather data will be downloaded for all sampling points
+                    """)
+                
+                # Validate locations
+                is_valid, error_msg = validate_shapefile_locations(locations_dict)
+                if not is_valid:
+                    st.warning(f"⚠️ Warning: {error_msg}")
+                
+                # Convert to expected tuple format: (lat, lon, name)
+                locations_list = [(loc["lat"], loc["lon"], loc["name"]) for loc in locations_dict]
+                
+            except Exception as e:
+                st.error(f"❌ Error processing shapefile: {str(e)}")
+                st.session_state.uploaded_geodataframe = None
 
-elif location_method == "Upload Shapefile":
-    st.subheader("Upload Shapefile")
-    st.markdown("""
-    Upload a ZIP file containing your shapefile (.shp, .shx, .dbf, .prj files).
-    - For **polygon** geometries: centroid will be extracted
-    - For **point** geometries: points will be used directly
-    """)
-    
-    uploaded_file = st.file_uploader(
-        "Choose a ZIP file",
-        type=["zip"],
-        help="Upload a ZIP file containing all shapefile components"
-    )
-    
-    if uploaded_file is not None:
-        try:
-            # Extract shapefile from ZIP
-            shp_path = extract_shapefile_from_zip(uploaded_file)
-            
-            # Read shapefile
-            gdf = read_shapefile(shp_path)
-            
-            # Display shapefile info
-            st.success(f"✅ Shapefile loaded successfully! Found {len(gdf)} features.")
-            
-            # Show preview
-            with st.expander("Preview Shapefile Data"):
-                st.dataframe(gdf.head(10))
-            
-            # Extract locations
-            locations_dict = extract_locations_from_shapefile(gdf)
-            
-            # Validate locations
-            is_valid, error_msg = validate_shapefile_locations(locations_dict)
-            if not is_valid:
-                st.warning(f"⚠️ Warning: {error_msg}")
-            
-            # Convert to expected tuple format: (lat, lon, name)
-            locations_list = [(loc["lat"], loc["lon"], loc["name"]) for loc in locations_dict]
-            
-        except Exception as e:
-            st.error(f"❌ Error processing shapefile: {str(e)}")
-
-else:  # Upload KML/KMZ
-    st.subheader("Upload KML/KMZ")
-    st.markdown("""
-    Upload a KML or KMZ file containing location data.
-    - **KML**: Direct XML file with location data
-    - **KMZ**: Zipped KML file (Google Earth format)
-    - For **polygon** geometries: centroid will be extracted
-    - For **point** geometries: points will be used directly
-    """)
-    
-    uploaded_file = st.file_uploader(
-        "Choose a KML or KMZ file",
-        type=["kml", "kmz"],
-        help="Upload a KML or KMZ file with location data"
-    )
-    
-    if uploaded_file is not None:
-        try:
-            # Save uploaded file to temporary location
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
-                tmp_file.write(uploaded_file.read())
-                kml_path = tmp_file.name
-            
-            # Read KML/KMZ file
-            gdf = read_kml_file(kml_path)
-            
-            # Display file info
-            st.success(f"✅ KML/KMZ loaded successfully! Found {len(gdf)} features.")
-            
-            # Show preview
-            with st.expander("Preview KML/KMZ Data"):
-                st.dataframe(gdf.head(10))
-            
-            # Extract locations
-            locations_dict = extract_locations_from_kml(gdf)
-            
-            # Validate locations
-            is_valid, error_msg = validate_kml_locations(locations_dict)
-            if not is_valid:
-                st.warning(f"⚠️ Warning: {error_msg}")
-            
-            # Convert to expected tuple format: (lat, lon, name)
-            locations_list = [(loc["lat"], loc["lon"], loc["name"]) for loc in locations_dict]
-            
-            # Clean up temporary file
-            os.unlink(kml_path)
-            
-        except Exception as e:
-            st.error(f"❌ Error processing KML/KMZ file: {str(e)}")
-            # Clean up temporary file if it exists
-            if 'kml_path' in locals() and os.path.exists(kml_path):
+    else:  # Upload KML/KMZ
+        st.subheader("Upload KML/KMZ")
+        st.markdown("""
+        Upload a KML or KMZ file containing location data.
+        - **KML**: Direct XML file with location data
+        - **KMZ**: Zipped KML file (Google Earth format)
+        - For **polygon** geometries: centroid will be extracted
+        - For **point** geometries: points will be used directly
+        """)
+        
+        uploaded_file = st.file_uploader(
+            "Choose a KML or KMZ file",
+            type=["kml", "kmz"],
+            help="Upload a KML or KMZ file with location data"
+        )
+        
+        if uploaded_file is not None:
+            try:
+                # Save uploaded file to temporary location
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
+                    tmp_file.write(uploaded_file.read())
+                    kml_path = tmp_file.name
+                
+                # Read KML/KMZ file
+                gdf = read_kml_file(kml_path)
+                
+                # Store GeoDataFrame in session state
+                st.session_state.uploaded_geodataframe = gdf
+                
+                # Display file info
+                st.success(f"✅ KML/KMZ loaded successfully! Found {len(gdf)} features.")
+                
+                # Show preview
+                with st.expander("Preview KML/KMZ Data"):
+                    st.dataframe(gdf.head(10))
+                
+                # Extract locations with polygon sampling
+                locations_dict = extract_locations_from_kml(gdf, use_polygon_sampling=True)
+                
+                # Show sampling summary
+                summary = get_sampling_summary(locations_dict)
+                if summary['sampling_points'] > 0:
+                    st.info(f"""
+                    📊 **Polygon Sampling Active**
+                    - **{summary['num_polygons']}** polygon(s) detected
+                    - **{summary['sampling_points']}** sampling points generated
+                    - **{summary['avg_points_per_polygon']:.1f}** points per polygon (average)
+                    - Weather data will be downloaded for all sampling points
+                    """)
+                
+                # Validate locations
+                is_valid, error_msg = validate_kml_locations(locations_dict)
+                if not is_valid:
+                    st.warning(f"⚠️ Warning: {error_msg}")
+                
+                # Convert to expected tuple format: (lat, lon, name)
+                locations_list = [(loc["lat"], loc["lon"], loc["name"]) for loc in locations_dict]
+                
+                # Clean up temporary file
                 os.unlink(kml_path)
+                
+            except Exception as e:
+                st.error(f"❌ Error processing KML/KMZ file: {str(e)}")
+                st.session_state.uploaded_geodataframe = None
+                # Clean up temporary file if it exists
+                if 'kml_path' in locals() and os.path.exists(kml_path):
+                    os.unlink(kml_path)
+
+# Add satellite view in the right column
+with right_col:
+    st.subheader("🛰️ Google Satellite View")
+    
+    if locations_list:
+        try:
+            # Create satellite map with Google imagery
+            # Pass GeoDataFrame if available (for polygons/actual geometries)
+            satellite_map = create_satellite_map(
+                locations_list, 
+                height=600,
+                gdf=st.session_state.uploaded_geodataframe
+            )
+            
+            # Display the map
+            from streamlit_folium import st_folium
+            st_folium(satellite_map, width=None, height=600)
+            
+        except Exception as e:
+            st.warning(f"⚠️ Satellite view unavailable: {str(e)}")
+            st.info("💡 Select locations on the left to view satellite imagery")
+    else:
+        st.info("💡 Select locations on the left to view satellite imagery")
+        # Show placeholder map of Africa
+        try:
+            placeholder_map = create_satellite_map([], height=600)
+            from streamlit_folium import st_folium
+            st_folium(placeholder_map, width=None, height=600)
+        except:
+            pass
 
 # Display selected locations
 if locations_list:
@@ -503,8 +593,19 @@ if locations_list:
     
     st.session_state.selected_locations = locations_list
 
-# Fetch Data button
-st.header("🚀 Fetch Data")
+# Fetch Data section with glassmorphism header
+st.markdown("""
+<div style='background: linear-gradient(135deg, rgba(34, 197, 94, 0.1) 0%, rgba(59, 130, 246, 0.1) 100%);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(34, 197, 94, 0.2);
+            border-radius: 12px;
+            padding: 1rem 1.5rem;
+            margin: 1rem 0 0.75rem 0;
+            box-shadow: 0 4px 20px 0 rgba(34, 197, 94, 0.15);'>
+    <h2 style='margin: 0; font-size: 1.5rem; line-height: 1.3;'>🚀 Fetch Data</h2>
+    <p style='margin: 0.25rem 0 0 0; color: #9ca3af; font-size: 0.9rem;'>Download weather data for selected locations</p>
+</div>
+""", unsafe_allow_html=True)
 
 # Display fetch summary
 if selected_params and locations_list and start_date <= end_date:
@@ -958,19 +1059,21 @@ st.markdown("""
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; padding: 20px; background-color: #f0f2f6; border-radius: 10px; margin-top: 30px;'>
-    <h4>👨‍💻 Created by</h4>
-    <h3>Victor Iko-ojo Idakwo</h3>
-    <p><strong>RTP, MNITP, MGEOSON</strong></p>
-    <p>
-        <a href="https://www.linkedin.com/in/victor-idakwo-8a838a12a/" target="_blank" style="margin: 0 10px; text-decoration: none;">
+    <h4 style='color: #000000 !important; margin: 0 0 10px 0; font-weight: 600;'>👨‍💻 Created by</h4>
+    <h3 style='color: #000000 !important; margin: 5px 0; font-weight: 700;'>Victor Iko-ojo Idakwo</h3>
+    <p style='color: #000000 !important; margin: 5px 0;'><strong style='color: #000000 !important;'>RTP, MNITP, MGEOSON</strong></p>
+    <p style='margin: 15px 0;'>
+        <a href="https://www.linkedin.com/in/victor-idakwo-8a838a12a/" target="_blank" 
+           style="margin: 0 10px; text-decoration: none; color: #3b82f6 !important; font-weight: 500;">
             🔗 LinkedIn
         </a>
-        |
-        <a href="https://github.com/VictorIdakwo" target="_blank" style="margin: 0 10px; text-decoration: none;">
+        <span style='color: #000000 !important;'>|</span>
+        <a href="https://github.com/VictorIdakwo" target="_blank" 
+           style="margin: 0 10px; text-decoration: none; color: #3b82f6 !important; font-weight: 500;">
             💻 GitHub
         </a>
     </p>
-    <p style="font-size: 0.9em; color: #666; margin-top: 10px;">
+    <p style="font-size: 0.9em; color: #000000 !important; margin-top: 10px;">
         Weather Data Portal • Powered by Google Earth Engine
     </p>
 </div>
