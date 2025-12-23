@@ -87,6 +87,59 @@ st.set_page_config(
 # Apply Glassmorphism Theme
 st.markdown(get_glassmorphism_css(), unsafe_allow_html=True)
 
+# Mobile-friendly sidebar toggle button (visible on all devices)
+st.markdown("""
+<style>
+/* Mobile hamburger menu button */
+.mobile-menu-btn {
+    display: none;
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    z-index: 999999;
+    background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+    border: none;
+    border-radius: 10px;
+    padding: 12px;
+    cursor: pointer;
+    box-shadow: 0 4px 15px rgba(59, 130, 246, 0.5);
+    transition: all 0.3s ease;
+}
+.mobile-menu-btn:hover {
+    transform: scale(1.1);
+    box-shadow: 0 6px 20px rgba(59, 130, 246, 0.7);
+}
+.mobile-menu-btn svg {
+    width: 24px;
+    height: 24px;
+    fill: white;
+}
+/* Show on mobile */
+@media (max-width: 768px) {
+    .mobile-menu-btn {
+        display: block;
+    }
+    /* Add padding to header so it doesn't overlap with menu button */
+    .stApp > header {
+        padding-left: 60px !important;
+    }
+}
+</style>
+
+<button class="mobile-menu-btn" onclick="
+    const sidebar = window.parent.document.querySelector('[data-testid=stSidebar]');
+    const expandBtn = window.parent.document.querySelector('[data-testid=stSidebarCollapseButton]');
+    if (sidebar) {
+        const isExpanded = sidebar.getAttribute('aria-expanded') === 'true';
+        if (expandBtn) expandBtn.click();
+    }
+" title="Toggle Sidebar Menu">
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M3 6h18v2H3V6zm0 5h18v2H3v-2zm0 5h18v2H3v-2z"/>
+    </svg>
+</button>
+""", unsafe_allow_html=True)
+
 # Compact Header with Glassmorphism Design
 st.markdown("""
 <div style='text-align: center; padding: 1rem 0 0.5rem 0; margin-bottom: 1rem;'>
@@ -454,7 +507,7 @@ with left_col:
                 st.success(f"✅ Shapefile loaded successfully! Found {len(gdf)} features.")
                 
                 # Show preview
-                with st.expander("Preview Shapefile Data"):
+                if st.checkbox("📋 Preview Shapefile Data", key="preview_shp"):
                     st.dataframe(gdf.head(10))
                 
                 # Extract locations with polygon sampling
@@ -516,7 +569,7 @@ with left_col:
                 st.success(f"✅ KML/KMZ loaded successfully! Found {len(gdf)} features.")
                 
                 # Show preview
-                with st.expander("Preview KML/KMZ Data"):
+                if st.checkbox("📋 Preview KML/KMZ Data", key="preview_kml"):
                     st.dataframe(gdf.head(10))
                 
                 # Extract locations with polygon sampling
@@ -586,7 +639,7 @@ with right_col:
 if locations_list:
     st.success(f"✅ {len(locations_list)} location(s) selected")
     
-    with st.expander("View Selected Locations"):
+    if st.checkbox("📍 View Selected Locations", key="view_locations"):
         # locations_list format: [(lat, lon, name), ...]
         df_locations = pd.DataFrame(locations_list, columns=["Latitude", "Longitude", "Location Name"])
         st.dataframe(df_locations)
@@ -848,7 +901,7 @@ if st.button("Fetch Weather Data", type="primary", disabled=not (selected_params
             
             except Exception as e:
                 st.error(f"❌ Error fetching data: {str(e)}")
-                with st.expander("View Error Details"):
+                if st.checkbox("🔍 View Error Details", key="error_details"):
                     st.code(str(e))
 
 # Display fetched data
@@ -894,7 +947,7 @@ if st.session_state.fetched_data is not None:
             st.metric("Date Span", f"{date_span} days")
     
     # Data statistics (use original data)
-    with st.expander("View Data Statistics"):
+    if st.checkbox("📈 View Data Statistics", key="view_stats"):
         st.dataframe(original_df.describe())
     
     # Export section
@@ -982,8 +1035,8 @@ if st.session_state.fetched_data is not None:
         except Exception as e:
             st.error(f"Error: {str(e)}")
     
-    # Additional formats in expander
-    with st.expander("📦 More Export Formats"):
+    # Additional formats
+    if st.checkbox("📦 More Export Formats", key="more_formats"):
         col_a, col_b = st.columns(2)
         
         with col_a:

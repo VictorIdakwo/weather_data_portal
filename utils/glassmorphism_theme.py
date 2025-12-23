@@ -46,7 +46,8 @@ def get_glassmorphism_css():
     }
     
     /* ===== GLASSMORPHISM CARDS ===== */
-    div[data-testid="stVerticalBlock"] > div:has(div[data-testid="stMarkdownContainer"]) {
+    /* Only apply to main content area, not sidebar */
+    .main div[data-testid="stVerticalBlock"] > div:has(div[data-testid="stMarkdownContainer"]) {
         background: var(--bg-glass);
         backdrop-filter: blur(20px);
         -webkit-backdrop-filter: blur(20px);
@@ -58,7 +59,7 @@ def get_glassmorphism_css():
         transition: all 0.3s ease;
     }
     
-    div[data-testid="stVerticalBlock"] > div:has(div[data-testid="stMarkdownContainer"]):hover {
+    .main div[data-testid="stVerticalBlock"] > div:has(div[data-testid="stMarkdownContainer"]):hover {
         background: var(--bg-glass-hover);
         border-color: rgba(59, 130, 246, 0.3);
         transform: translateY(-2px);
@@ -68,12 +69,18 @@ def get_glassmorphism_css():
     /* ===== SIDEBAR STYLING ===== */
     section[data-testid="stSidebar"] {
         background: linear-gradient(180deg, rgba(10, 15, 26, 0.95) 0%, rgba(26, 31, 46, 0.95) 100%) !important;
-        backdrop-filter: blur(20px);
         border-right: 1px solid var(--border-glass);
     }
     
     section[data-testid="stSidebar"] > div {
         background: transparent !important;
+        overflow-y: auto !important;
+    }
+    
+    /* Ensure sidebar content is scrollable and interactive */
+    section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+        overflow-y: auto !important;
+        pointer-events: auto !important;
     }
     
     /* Sidebar headers */
@@ -237,6 +244,7 @@ def get_glassmorphism_css():
         color: var(--text-primary) !important;
         font-weight: 500 !important;
         transition: all 0.3s ease !important;
+        padding: 0.75rem 1rem !important;
     }
     
     .streamlit-expanderHeader:hover {
@@ -253,9 +261,62 @@ def get_glassmorphism_css():
         padding: 0.75rem !important;
     }
     
-    /* Just accept the keyboard text and style expanders nicely */
-    .streamlit-expanderHeader {
-        padding: 0.75rem 1rem !important;
+    /* ===== COMPLETELY HIDE KEYBOARD ARROW TEXT ===== */
+    /* Target ALL possible selectors for the Material Icons text */
+    .material-symbols-rounded,
+    [class*="material-symbols"],
+    span[class*="st-emotion-cache"]:not([data-testid]),
+    [data-testid="stSidebarCollapseButton"] span,
+    [data-testid="stExpanderToggleIcon"] span,
+    button[kind="header"] span,
+    section[data-testid="stSidebar"] button span {
+        font-size: 0 !important;
+        visibility: hidden !important;
+        width: 0 !important;
+        height: 0 !important;
+        overflow: hidden !important;
+        display: none !important;
+        color: transparent !important;
+        -webkit-text-fill-color: transparent !important;
+    }
+    
+    /* Sidebar collapse button styling */
+    [data-testid="stSidebarCollapseButton"] {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        min-width: auto !important;
+    }
+    
+    /* When sidebar is OPEN - show close arrow */
+    section[data-testid="stSidebar"][aria-expanded="true"] [data-testid="stSidebarCollapseButton"]::after {
+        content: "◀ Close" !important;
+        font-size: 12px !important;
+        font-family: 'Inter', sans-serif !important;
+        color: white !important;
+        font-weight: 500 !important;
+        display: block !important;
+        visibility: visible !important;
+    }
+    
+    /* When sidebar is COLLAPSED - show expand message */
+    section[data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarCollapseButton"]::after,
+    [data-testid="stSidebarCollapseButton"]::after {
+        content: "Click to expand to select Data sources" !important;
+        font-size: 11px !important;
+        font-family: 'Inter', sans-serif !important;
+        color: white !important;
+        font-weight: 500 !important;
+        display: block !important;
+        visibility: visible !important;
+        white-space: nowrap !important;
+    }
+    
+    /* Hide the text that says keyboard_double_arrow using font-face override */
+    @font-face {
+        font-family: 'Material Symbols Rounded';
+        src: local('Arial');
+        unicode-range: U+0000-00FF;
     }
     
     /* ===== DATAFRAMES / TABLES ===== */
@@ -398,7 +459,8 @@ def get_glassmorphism_css():
     }
     
     /* ===== COLUMNS ===== */
-    div[data-testid="column"] {
+    /* Only apply to main content columns, not sidebar */
+    .main div[data-testid="column"] {
         background: var(--bg-glass);
         backdrop-filter: blur(20px);
         border: 1px solid var(--border-glass);
@@ -406,6 +468,17 @@ def get_glassmorphism_css():
         padding: 1rem;
         margin: 0.25rem;
         box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+    }
+    
+    /* Sidebar columns should be simple */
+    section[data-testid="stSidebar"] div[data-testid="column"] {
+        background: transparent;
+        backdrop-filter: none;
+        border: none;
+        border-radius: 0;
+        padding: 0.25rem;
+        margin: 0;
+        box-shadow: none;
     }
     
     /* ===== SCROLLBAR ===== */
@@ -469,7 +542,66 @@ def get_glassmorphism_css():
     /* ===== HIDE STREAMLIT BRANDING ===== */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
+    
+    /* ===== SIDEBAR TOGGLE BUTTON (Mobile & Desktop) ===== */
+    /* Ensure sidebar collapse/expand button is always visible and accessible */
+    button[data-testid="stSidebarCollapseButton"],
+    button[data-testid="baseButton-headerNoPadding"] {
+        visibility: visible !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
+        z-index: 999999 !important;
+        position: fixed !important;
+        background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%) !important;
+        border: none !important;
+        border-radius: 8px !important;
+        padding: 8px !important;
+        box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4) !important;
+        cursor: pointer !important;
+    }
+    
+    button[data-testid="stSidebarCollapseButton"]:hover,
+    button[data-testid="baseButton-headerNoPadding"]:hover {
+        transform: scale(1.1) !important;
+        box-shadow: 0 6px 20px rgba(59, 130, 246, 0.6) !important;
+    }
+    
+    /* Style the arrow icon inside the button */
+    button[data-testid="stSidebarCollapseButton"] svg,
+    button[data-testid="baseButton-headerNoPadding"] svg {
+        fill: white !important;
+        stroke: white !important;
+        width: 20px !important;
+        height: 20px !important;
+    }
+    
+    /* Mobile-specific: Make sidebar toggle more prominent */
+    @media (max-width: 768px) {
+        button[data-testid="stSidebarCollapseButton"],
+        button[data-testid="baseButton-headerNoPadding"] {
+            top: 10px !important;
+            left: 10px !important;
+            width: 44px !important;
+            height: 44px !important;
+            padding: 10px !important;
+        }
+        
+        /* When sidebar is collapsed, show expand button */
+        section[data-testid="stSidebar"][aria-expanded="false"] ~ div button[data-testid="baseButton-headerNoPadding"] {
+            display: block !important;
+            visibility: visible !important;
+        }
+    }
+    
+    /* Ensure header area doesn't block the toggle */
+    header[data-testid="stHeader"] {
+        background: transparent !important;
+        pointer-events: none !important;
+    }
+    
+    header[data-testid="stHeader"] * {
+        pointer-events: auto !important;
+    }
     
     </style>
     """
