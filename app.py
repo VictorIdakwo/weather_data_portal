@@ -87,42 +87,17 @@ st.set_page_config(
 # Apply Glassmorphism Theme
 st.markdown(get_glassmorphism_css(), unsafe_allow_html=True)
 
-# Mobile-friendly sidebar toggle button (CSS-based approach)
+# Mobile-friendly sidebar toggle - pure CSS checkbox hack
 st.markdown("""
-<!-- Mobile menu button with improved toggle -->
-<div class="mobile-menu-btn" onclick="
-    // Toggle sidebar with multiple fallback methods
-    const sidebar = document.querySelector('[data-testid=stSidebar]');
-    if (sidebar) {
-        const isExpanded = sidebar.getAttribute('aria-expanded') === 'true';
-        sidebar.setAttribute('aria-expanded', !isExpanded);
-        
-        // Try to find and click the official toggle button too
-        const toggleBtn = document.querySelector('[data-testid=stSidebarCollapseButton]');
-        if (toggleBtn) {
-            toggleBtn.click();
-        }
-        
-        // Close sidebar when clicking outside (add overlay click handler)
-        setTimeout(() => {
-            const overlay = document.querySelector('.sidebar-overlay');
-            if (!overlay && !isExpanded) {
-                const overlayDiv = document.createElement('div');
-                overlayDiv.className = 'sidebar-overlay';
-                overlayDiv.style.cssText = 'position:fixed;top:0;left:280px;width:calc(100vw-280px);height:100vh;background:rgba(0,0,0,0.5);z-index:999998;';
-                overlayDiv.onclick = function() {
-                    sidebar.setAttribute('aria-expanded', 'false');
-                    document.body.removeChild(overlayDiv);
-                };
-                document.body.appendChild(overlayDiv);
-            }
-        }, 100);
-    }
-">
+<!-- Hidden checkbox for CSS toggle -->
+<input type="checkbox" id="mobile-sidebar-toggle" style="display: none;">
+
+<!-- Mobile menu button as label for checkbox -->
+<label for="mobile-sidebar-toggle" class="mobile-menu-btn">
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
         <path d="M3 6h18v2H3V6zm0 5h18v2H3v-2zm0 5h18v2H3v-2z"/>
     </svg>
-</div>
+</label>
 """, unsafe_allow_html=True)
 
 # Compact Header with Glassmorphism Design

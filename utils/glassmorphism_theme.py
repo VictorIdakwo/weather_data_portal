@@ -543,35 +543,12 @@ def get_glassmorphism_css():
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* ===== MOBILE SIDEBAR ENHANCEMENTS ===== */
-    /* Make sidebar overlay on mobile */
+    /* ===== MOBILE SIDEBAR ENHANCEMENTS - PURE CSS ===== */
+    /* CSS Checkbox Hack for Mobile Sidebar */
     @media (max-width: 768px) {
-        section[data-testid="stSidebar"] {
-            position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 280px !important;
-            height: 100vh !important;
-            z-index: 999999 !important;
-            transform: translateX(-100%) !important;
-            transition: transform 0.3s ease !important;
-            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3) !important;
-        }
-        
-        section[data-testid="stSidebar"][aria-expanded="true"] {
-            transform: translateX(0) !important;
-        }
-        
-        /* Add overlay when sidebar is open */
-        section[data-testid="stSidebar"][aria-expanded="true"]::after {
-            content: "" !important;
-            position: fixed !important;
-            top: 0 !important;
-            left: 280px !important;
-            width: calc(100vw - 280px) !important;
-            height: 100vh !important;
-            background: rgba(0, 0, 0, 0.5) !important;
-            z-index: 999998 !important;
+        /* Hidden checkbox to control sidebar state */
+        #mobile-sidebar-toggle {
+            display: none;
         }
         
         /* Mobile menu button */
@@ -587,6 +564,7 @@ def get_glassmorphism_css():
             padding: 12px !important;
             cursor: pointer !important;
             box-shadow: 0 4px 15px rgba(59, 130, 246, 0.5) !important;
+            transition: all 0.3s ease !important;
         }
         
         .mobile-menu-btn:hover {
@@ -600,13 +578,45 @@ def get_glassmorphism_css():
             fill: white !important;
         }
         
+        /* Sidebar positioning */
+        section[data-testid="stSidebar"] {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 280px !important;
+            height: 100vh !important;
+            z-index: 999999 !important;
+            transform: translateX(-100%) !important;
+            transition: transform 0.3s ease !important;
+            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3) !important;
+        }
+        
+        /* Show sidebar when checkbox is checked */
+        #mobile-sidebar-toggle:checked ~ .stApp section[data-testid="stSidebar"],
+        #mobile-sidebar-toggle:checked ~ div section[data-testid="stSidebar"] {
+            transform: translateX(0) !important;
+        }
+        
+        /* Overlay when sidebar is open */
+        #mobile-sidebar-toggle:checked ~ .stApp::before,
+        #mobile-sidebar-toggle:checked ~ div::before {
+            content: "" !important;
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            background: rgba(0, 0, 0, 0.5) !important;
+            z-index: 999998 !important;
+        }
+        
         /* Hide default Streamlit toggle on mobile */
         button[data-testid="stSidebarCollapseButton"] {
             display: none !important;
         }
         
-        /* Adjust main content when sidebar is open */
-        section[data-testid="stSidebar"][aria-expanded="true"] ~ .main {
+        /* Adjust main content */
+        section[data-testid="stSidebar"] ~ .main {
             margin-left: 0 !important;
         }
     }
