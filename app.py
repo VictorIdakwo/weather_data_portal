@@ -87,7 +87,7 @@ st.set_page_config(
 # Apply Glassmorphism Theme
 st.markdown(get_glassmorphism_css(), unsafe_allow_html=True)
 
-# Mobile-friendly sidebar toggle button (visible on all devices)
+# Mobile-friendly sidebar toggle button (simplified version)
 st.markdown("""
 <style>
 /* Mobile hamburger menu button */
@@ -126,61 +126,22 @@ st.markdown("""
 }
 </style>
 
-<script>
-// Add a more reliable sidebar toggle function
-window.toggleSidebar = function() {
-    // Try to find the sidebar in multiple ways
-    const sidebar = document.querySelector('[data-testid="stSidebar"]') || 
-                    document.querySelector('.stSidebar') ||
-                    document.querySelector('section[data-testid="stSidebar"]');
-                    
-    const toggleBtn = document.querySelector('[data-testid="stSidebarCollapseButton"]');
-    
-    if (toggleBtn) {
-        // Try clicking the official toggle button first
-        toggleBtn.click();
-    } else if (sidebar) {
-        // Fallback: manually toggle the sidebar
-        const isExpanded = sidebar.getAttribute('aria-expanded') === 'true';
-        sidebar.setAttribute('aria-expanded', !isExpanded);
-        
-        // Also try to find and click any menu button
-        const menuBtn = document.querySelector('button[kind="header"]') ||
-                        document.querySelector('.st-emotion-cache-1jmbz');
-        if (menuBtn) {
-            menuBtn.click();
+<!-- Simple mobile menu button without JavaScript -->
+<div class="mobile-menu-btn" onclick="
+    (function() {
+        const sidebar = document.querySelector('[data-testid=stSidebar]');
+        const btn = document.querySelector('[data-testid=stSidebarCollapseButton]');
+        if (btn) btn.click();
+        else if (sidebar) {
+            const expanded = sidebar.getAttribute('aria-expanded');
+            sidebar.setAttribute('aria-expanded', expanded === 'true' ? 'false' : 'true');
         }
-    }
-    
-    // Force a refresh of the layout
-    setTimeout(() => {
-        window.dispatchEvent(new Event('resize'));
-    }, 100);
-}
-</script>
-
-<button class="mobile-menu-btn" onclick="
-    // Call the global toggleSidebar function
-    if (window.parent.toggleSidebar) {
-        window.parent.toggleSidebar();
-    } else {
-        // Fallback: try direct manipulation
-        const sidebar = window.parent.document.querySelector('[data-testid=stSidebar]') || 
-                        window.parent.document.querySelector('.stSidebar');
-        const expandBtn = window.parent.document.querySelector('[data-testid=stSidebarCollapseButton]');
-        
-        if (expandBtn) {
-            expandBtn.click();
-        } else if (sidebar) {
-            const isExpanded = sidebar.getAttribute('aria-expanded') === 'true';
-            sidebar.setAttribute('aria-expanded', !isExpanded);
-        }
-    }
-" title="Toggle Sidebar Menu">
+    })();
+">
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
         <path d="M3 6h18v2H3V6zm0 5h18v2H3v-2zm0 5h18v2H3v-2z"/>
     </svg>
-</button>
+</div>
 """, unsafe_allow_html=True)
 
 # Compact Header with Glassmorphism Design
