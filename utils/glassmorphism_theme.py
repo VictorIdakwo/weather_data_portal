@@ -543,15 +543,80 @@ def get_glassmorphism_css():
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* ===== SIDEBAR TOGGLE BUTTON (Mobile & Desktop) ===== */
-    /* Ensure sidebar collapse/expand button is always visible and accessible */
-    button[data-testid="stSidebarCollapseButton"],
-    button[data-testid="baseButton-headerNoPadding"] {
+    /* ===== MOBILE SIDEBAR ENHANCEMENTS ===== */
+    /* Make sidebar overlay on mobile */
+    @media (max-width: 768px) {
+        section[data-testid="stSidebar"] {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 280px !important;
+            height: 100vh !important;
+            z-index: 999999 !important;
+            transform: translateX(-100%) !important;
+            transition: transform 0.3s ease !important;
+            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3) !important;
+        }
+        
+        section[data-testid="stSidebar"][aria-expanded="true"] {
+            transform: translateX(0) !important;
+        }
+        
+        /* Add overlay when sidebar is open */
+        section[data-testid="stSidebar"][aria-expanded="true"]::after {
+            content: "" !important;
+            position: fixed !important;
+            top: 0 !important;
+            left: 280px !important;
+            width: calc(100vw - 280px) !important;
+            height: 100vh !important;
+            background: rgba(0, 0, 0, 0.5) !important;
+            z-index: 999998 !important;
+        }
+        
+        /* Mobile menu button */
+        .mobile-menu-btn {
+            display: block !important;
+            position: fixed !important;
+            top: 10px !important;
+            left: 10px !important;
+            z-index: 1000000 !important;
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%) !important;
+            border: none !important;
+            border-radius: 10px !important;
+            padding: 12px !important;
+            cursor: pointer !important;
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.5) !important;
+        }
+        
+        .mobile-menu-btn:hover {
+            transform: scale(1.1) !important;
+            box-shadow: 0 6px 20px rgba(59, 130, 246, 0.7) !important;
+        }
+        
+        .mobile-menu-btn svg {
+            width: 24px !important;
+            height: 24px !important;
+            fill: white !important;
+        }
+        
+        /* Hide default Streamlit toggle on mobile */
+        button[data-testid="stSidebarCollapseButton"] {
+            display: none !important;
+        }
+        
+        /* Adjust main content when sidebar is open */
+        section[data-testid="stSidebar"][aria-expanded="true"] ~ .main {
+            margin-left: 0 !important;
+        }
+    }
+    
+    /* ===== DESKTOP SIDEBAR TOGGLE ===== */
+    button[data-testid="stSidebarCollapseButton"] {
         visibility: visible !important;
         opacity: 1 !important;
         pointer-events: auto !important;
         z-index: 999999 !important;
-        position: fixed !important;
         background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%) !important;
         border: none !important;
         border-radius: 8px !important;
@@ -560,37 +625,9 @@ def get_glassmorphism_css():
         cursor: pointer !important;
     }
     
-    button[data-testid="stSidebarCollapseButton"]:hover,
-    button[data-testid="baseButton-headerNoPadding"]:hover {
+    button[data-testid="stSidebarCollapseButton"]:hover {
         transform: scale(1.1) !important;
         box-shadow: 0 6px 20px rgba(59, 130, 246, 0.6) !important;
-    }
-    
-    /* Style the arrow icon inside the button */
-    button[data-testid="stSidebarCollapseButton"] svg,
-    button[data-testid="baseButton-headerNoPadding"] svg {
-        fill: white !important;
-        stroke: white !important;
-        width: 20px !important;
-        height: 20px !important;
-    }
-    
-    /* Mobile-specific: Make sidebar toggle more prominent */
-    @media (max-width: 768px) {
-        button[data-testid="stSidebarCollapseButton"],
-        button[data-testid="baseButton-headerNoPadding"] {
-            top: 10px !important;
-            left: 10px !important;
-            width: 44px !important;
-            height: 44px !important;
-            padding: 10px !important;
-        }
-        
-        /* When sidebar is collapsed, show expand button */
-        section[data-testid="stSidebar"][aria-expanded="false"] ~ div button[data-testid="baseButton-headerNoPadding"] {
-            display: block !important;
-            visibility: visible !important;
-        }
     }
     
     /* Ensure header area doesn't block the toggle */

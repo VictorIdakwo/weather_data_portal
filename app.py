@@ -87,56 +87,37 @@ st.set_page_config(
 # Apply Glassmorphism Theme
 st.markdown(get_glassmorphism_css(), unsafe_allow_html=True)
 
-# Mobile-friendly sidebar toggle button (simplified version)
+# Mobile-friendly sidebar toggle button (CSS-based approach)
 st.markdown("""
-<style>
-/* Mobile hamburger menu button */
-.mobile-menu-btn {
-    display: none;
-    position: fixed;
-    top: 12px;
-    left: 12px;
-    z-index: 999999;
-    background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
-    border: none;
-    border-radius: 10px;
-    padding: 12px;
-    cursor: pointer;
-    box-shadow: 0 4px 15px rgba(59, 130, 246, 0.5);
-    transition: all 0.3s ease;
-}
-.mobile-menu-btn:hover {
-    transform: scale(1.1);
-    box-shadow: 0 6px 20px rgba(59, 130, 246, 0.7);
-}
-.mobile-menu-btn svg {
-    width: 24px;
-    height: 24px;
-    fill: white;
-}
-/* Show on mobile */
-@media (max-width: 768px) {
-    .mobile-menu-btn {
-        display: block;
-    }
-    /* Add padding to header so it doesn't overlap with menu button */
-    .stApp > header {
-        padding-left: 60px !important;
-    }
-}
-</style>
-
-<!-- Simple mobile menu button without JavaScript -->
+<!-- Mobile menu button with improved toggle -->
 <div class="mobile-menu-btn" onclick="
-    (function() {
-        const sidebar = document.querySelector('[data-testid=stSidebar]');
-        const btn = document.querySelector('[data-testid=stSidebarCollapseButton]');
-        if (btn) btn.click();
-        else if (sidebar) {
-            const expanded = sidebar.getAttribute('aria-expanded');
-            sidebar.setAttribute('aria-expanded', expanded === 'true' ? 'false' : 'true');
+    // Toggle sidebar with multiple fallback methods
+    const sidebar = document.querySelector('[data-testid=stSidebar]');
+    if (sidebar) {
+        const isExpanded = sidebar.getAttribute('aria-expanded') === 'true';
+        sidebar.setAttribute('aria-expanded', !isExpanded);
+        
+        // Try to find and click the official toggle button too
+        const toggleBtn = document.querySelector('[data-testid=stSidebarCollapseButton]');
+        if (toggleBtn) {
+            toggleBtn.click();
         }
-    })();
+        
+        // Close sidebar when clicking outside (add overlay click handler)
+        setTimeout(() => {
+            const overlay = document.querySelector('.sidebar-overlay');
+            if (!overlay && !isExpanded) {
+                const overlayDiv = document.createElement('div');
+                overlayDiv.className = 'sidebar-overlay';
+                overlayDiv.style.cssText = 'position:fixed;top:0;left:280px;width:calc(100vw-280px);height:100vh;background:rgba(0,0,0,0.5);z-index:999998;';
+                overlayDiv.onclick = function() {
+                    sidebar.setAttribute('aria-expanded', 'false');
+                    document.body.removeChild(overlayDiv);
+                };
+                document.body.appendChild(overlayDiv);
+            }
+        }, 100);
+    }
 ">
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
         <path d="M3 6h18v2H3V6zm0 5h18v2H3v-2zm0 5h18v2H3v-2z"/>
