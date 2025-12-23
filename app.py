@@ -87,17 +87,20 @@ st.set_page_config(
 # Apply Glassmorphism Theme
 st.markdown(get_glassmorphism_css(), unsafe_allow_html=True)
 
-# Mobile-friendly sidebar toggle - pure CSS checkbox hack
+# Mobile-friendly sidebar toggle - simple JavaScript
 st.markdown("""
-<!-- Hidden checkbox for CSS toggle -->
-<input type="checkbox" id="mobile-sidebar-toggle" style="display: none;">
-
-<!-- Mobile menu button as label for checkbox -->
-<label for="mobile-sidebar-toggle" class="mobile-menu-btn">
+<!-- Mobile menu button with simple toggle -->
+<div class="mobile-menu-btn" onclick="
+    const sidebar = document.querySelector('[data-testid=stSidebar]');
+    if (sidebar) {
+        const isExpanded = sidebar.getAttribute('aria-expanded') === 'true';
+        sidebar.setAttribute('aria-expanded', !isExpanded);
+    }
+">
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
         <path d="M3 6h18v2H3V6zm0 5h18v2H3v-2zm0 5h18v2H3v-2z"/>
     </svg>
-</label>
+</div>
 """, unsafe_allow_html=True)
 
 # Compact Header with Glassmorphism Design
