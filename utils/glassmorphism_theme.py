@@ -261,11 +261,14 @@ def get_glassmorphism_css():
         padding: 0.75rem !important;
     }
     
-    /* ===== COMPLETELY HIDE KEYBOARD ARROW TEXT ===== */
-    /* Target ALL possible selectors for the Material Icons text */
+    /* ===== HIDE MATERIAL ICONS GLYPH TEXT IN UI CHROME ===== */
+    /* Targets only Material-Symbols icon spans + specific UI-chrome
+       buttons. The previously-included `span[class*="st-emotion-cache"]
+       :not([data-testid])` selector was too broad — newer Streamlit
+       versions wrap every button's *label* in such a span, which caused
+       button labels (e.g. "Fetch Weather Data") to disappear on Cloud. */
     .material-symbols-rounded,
     [class*="material-symbols"],
-    span[class*="st-emotion-cache"]:not([data-testid]),
     [data-testid="stSidebarCollapseButton"] span,
     [data-testid="stExpanderToggleIcon"] span,
     button[kind="header"] span,
