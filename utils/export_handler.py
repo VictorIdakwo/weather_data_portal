@@ -79,11 +79,33 @@ def export_to_shapefile(df: pd.DataFrame, lat_col: str = "latitude", lon_col: st
     
     # Create GeoDataFrame
     gdf = create_geodataframe_from_data(df, lat_col, lon_col)
-    
-    # Shapefile has column name length limit of 10 characters
-    # Truncate column names if needed
-    gdf.columns = [col[:10] if len(col) > 10 else col for col in gdf.columns]
-    
+
+    # Shapefile (.dbf) has a 10-char column name limit. Naive truncation can
+    # collide (e.g. ALLSKY_SFC_SW_DWN and ALLSKY_SFC_LW_DWN both -> ALLSKY_SFC).
+    # Truncate, then de-duplicate by suffixing _1, _2, ... while keeping the
+    # total length <= 10.
+    new_cols = []
+    seen = {}
+    for col in gdf.columns:
+        if col == "geometry":
+            new_cols.append(col)
+            continue
+        base = col[:10]
+        if base not in seen:
+            seen[base] = 0
+            new_cols.append(base)
+        else:
+            seen[base] += 1
+            suffix = f"_{seen[base]}"
+            trimmed = base[: 10 - len(suffix)] + suffix
+            # Ensure the de-duplicated name itself doesn't collide
+            while trimmed in new_cols:
+                seen[base] += 1
+                suffix = f"_{seen[base]}"
+                trimmed = base[: 10 - len(suffix)] + suffix
+            new_cols.append(trimmed)
+    gdf.columns = new_cols
+
     # Convert datetime columns to strings (shapefiles don't support datetime)
     for col in gdf.columns:
         if col != "geometry" and pd.api.types.is_datetime64_any_dtype(gdf[col]):

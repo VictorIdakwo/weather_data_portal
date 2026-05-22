@@ -36,7 +36,10 @@ NASA_POWER_PARAMETERS = {
         "PS": "Surface Pressure (kPa)",
     },
     "Evapotranspiration": {
-        "EVPTRNS": "Evapotranspiration Energy Flux (MJ/m^2/day)",
+        # Verified available on both daily and hourly NASA POWER endpoints.
+        # Units are MJ/m^2 per accumulation interval (per-day for daily,
+        # per-hour for hourly).
+        "EVPTRNS": "Evapotranspiration Energy Flux (MJ/m^2)",
     },
 }
 

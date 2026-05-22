@@ -348,29 +348,35 @@ def fetch_era5_data(
     parameters: List[str],
     start_date: str,
     end_date: str,
-    credentials_dict: Dict = None
+    credentials_dict: Dict = None,
+    chunk_days: int = 30,
 ) -> pd.DataFrame:
     """
-    Fetch ERA5-Land data via Google Earth Engine.
-    Simpler and faster than CDS API - no token needed!
-    
+    Fetch ERA5-Land hourly data via Google Earth Engine.
+
+    Key correctness properties:
+      * Date range is chunked (default 30 days = ~720 hourly images) so we
+        never silently truncate at GEE's element-list limits.
+      * All requested bands are sampled in a single reduceRegion call per
+        image, yielding one *wide* row per (timestamp, location_id) with one
+        column per user-facing parameter — not one row per (timestamp, param).
+
     Args:
-        locations: List of (latitude, longitude) tuples
-        parameters: List of parameter names
-        start_date: Start date 'YYYY-MM-DD'
-        end_date: End date 'YYYY-MM-DD'
-        credentials_dict: Earth Engine credentials
-    
-    Returns:
-        DataFrame with ERA5 hourly data
+        locations: list of (lat, lon) tuples
+        parameters: user-facing ERA5 parameter codes
+        start_date / end_date: 'YYYY-MM-DD'
+        credentials_dict: EE service account credentials
+        chunk_days: window size in days per GEE request
     """
-    
+
     # Initialize Earth Engine
     client = EarthEngineClient(credentials_dict=credentials_dict)
-    
+    if not client.initialized:
+        raise Exception("Earth Engine initialization failed")
+
     print(f"Fetching ERA5-Land data from {start_date} to {end_date}...")
-    
-    # ERA5-Land parameter mapping to EE band names
+
+    # User-facing param -> ERA5-Land band name on the EE collection.
     param_map = {
         '2m_temperature': 'temperature_2m',
         'temperature_2m': 'temperature_2m',
@@ -383,88 +389,100 @@ def fetch_era5_data(
         'u_component_of_wind_10m': 'u_component_of_wind_10m',
         'v_component_of_wind_10m': 'v_component_of_wind_10m',
     }
-    
-    # Get ERA5-Land hourly collection  
-    dataset = ee.ImageCollection('ECMWF/ERA5_LAND/HOURLY')
-    
-    all_data = []
-    
+
+    # Resolve bands and keep both directions of the mapping.
+    band_names = []
+    band_to_user_param = {}
+    skipped = []
+    for p in parameters:
+        b = param_map.get(p)
+        if b is None:
+            skipped.append(p)
+            continue
+        if b not in band_to_user_param:
+            band_names.append(b)
+            band_to_user_param[b] = p
+    if skipped:
+        print(f"  [WARN] ERA5 params not available via Earth Engine and skipped: {', '.join(skipped)}")
+    if not band_names:
+        print("[WARNING] No supported ERA5 bands selected; nothing to fetch.")
+        return pd.DataFrame()
+
+    collection = ee.ImageCollection('ECMWF/ERA5_LAND/HOURLY').select(band_names)
+
+    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+    if end_dt <= start_dt:
+        return pd.DataFrame()
+
+    all_records = []
+
     for idx, (lat, lon) in enumerate(locations):
         print(f"  Processing location {idx + 1}/{len(locations)}: ({lat}, {lon})")
-        
         point = ee.Geometry.Point([lon, lat])
-        
-        try:
-            # Filter by date
-            filtered = dataset.filterDate(start_date, end_date)
-            count = filtered.size().getInfo()
-            
-            print(f"    Found {count} hourly records")
-            
-            if count == 0:
-                continue
-            
-            # Limit to avoid timeout (1000 records = ~42 days hourly)
-            limit = min(count, 1000)
-            if count > limit:
-                print(f"    [WARNING] Limiting to {limit} of {count} records")
-            
-            for param in parameters:
-                band_name = param_map.get(param, param)
-                
-                try:
-                    def extract_values(image):
-                        value = image.select(band_name).reduceRegion(
-                            reducer=ee.Reducer.first(),
-                            geometry=point,
-                            scale=11132  # ~11km
-                        ).get(band_name)
-                        
-                        timestamp = ee.Date(image.get('system:time_start')).format('YYYY-MM-dd HH:mm')
-                        
-                        return ee.Feature(None, {
-                            'datetime': timestamp,
-                            'value': value,
-                            'latitude': lat,
-                            'longitude': lon,
-                            'location_id': idx
-                        })
-                    
-                    features = filtered.map(extract_values)
-                    feature_list = features.toList(limit).getInfo()
-                    
-                    for feature in feature_list:
-                        props = feature['properties']
-                        if props.get('value') is not None:
-                            value = props['value']
-                            
-                            # Unit conversions
-                            if 'temperature' in band_name:
-                                value = value - 273.15  # K to C
-                            elif 'precipitation' in band_name:
-                                value = value * 1000  # m to mm
-                            elif 'pressure' in band_name:
-                                value = value / 100  # Pa to hPa
-                            
-                            all_data.append({
-                                'datetime': props['datetime'],
-                                'latitude': props['latitude'],
-                                'longitude': props['longitude'],
-                                'location_id': props['location_id'],
-                                param: round(value, 2)
-                            })
-                
-                except Exception as e:
-                    print(f"    [ERROR] {param}: {str(e)}")
-        
-        except Exception as e:
-            print(f"  [ERROR] Location failed: {str(e)}")
-    
-    if all_data:
-        df = pd.DataFrame(all_data)
-        df['datetime'] = pd.to_datetime(df['datetime'])
-        print(f"[SUCCESS] Retrieved {len(df)} ERA5 records")
-        return df
-    else:
+
+        cur = start_dt
+        while cur < end_dt:
+            chunk_end = min(cur + timedelta(days=chunk_days), end_dt)
+            cs, ce = cur.strftime('%Y-%m-%d'), chunk_end.strftime('%Y-%m-%d')
+
+            try:
+                filtered = collection.filterDate(cs, ce)
+
+                def extract_values(image):
+                    vals = image.reduceRegion(
+                        reducer=ee.Reducer.first(),
+                        geometry=point,
+                        scale=11132,  # ~11 km
+                    )
+                    ts = ee.Date(image.get('system:time_start')).format('YYYY-MM-dd HH:mm')
+                    # Carry the timestamp on the same Feature as the band values.
+                    return ee.Feature(None, vals.set('datetime', ts))
+
+                # 2000 is well above the worst-case for a 30-day chunk (720) and
+                # leaves headroom for slightly wider chunks if callers tune it.
+                feature_list = filtered.map(extract_values).toList(2000).getInfo()
+
+                for feat in feature_list:
+                    props = feat.get('properties') or {}
+                    if not props:
+                        continue
+                    record = {
+                        'datetime': props.get('datetime'),
+                        'latitude': lat,
+                        'longitude': lon,
+                        'location_id': idx,
+                    }
+                    has_data = False
+                    for band in band_names:
+                        v = props.get(band)
+                        out_col = band_to_user_param[band]
+                        if v is None:
+                            record[out_col] = None
+                            continue
+                        # Unit conversions
+                        if 'temperature' in band:
+                            v = v - 273.15            # K -> °C
+                        elif 'precipitation' in band:
+                            v = v * 1000              # m -> mm
+                        elif 'pressure' in band:
+                            v = v / 100               # Pa -> hPa
+                        record[out_col] = round(v, 2)
+                        has_data = True
+                    if has_data:
+                        all_records.append(record)
+
+            except Exception as e:
+                print(f"    [ERROR] chunk {cs}..{ce}: {e}")
+
+            cur = chunk_end
+
+    if not all_records:
         print("[WARNING] No ERA5 data retrieved")
         return pd.DataFrame()
+
+    df = pd.DataFrame(all_records)
+    df['datetime'] = pd.to_datetime(df['datetime'])
+    df = df.sort_values(['location_id', 'datetime']).reset_index(drop=True)
+    print(f"[SUCCESS] Retrieved {len(df)} ERA5 records (one row per timestamp)")
+    return df

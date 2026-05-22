@@ -867,10 +867,74 @@ if st.button("Fetch Weather Data", type="primary", disabled=not (selected_params
                 if st.checkbox("🔍 View Error Details", key="error_details"):
                     st.code(str(e))
 
+# --- Cached export builders ---------------------------------------------------
+# Streamlit reruns the script on every interaction. Without caching, the
+# shapefile / Excel / GeoJSON byte payloads (and a fresh temp directory for the
+# shapefile) would be rebuilt on every checkbox toggle. We key the cache on a
+# hash of the dataframe so it invalidates whenever new data is fetched.
+
+def _df_fingerprint(df: pd.DataFrame) -> str:
+    """Stable, cheap-ish fingerprint of a DataFrame for cache keying."""
+    return f"{df.shape}-{int(pd.util.hash_pandas_object(df, index=True).sum())}"
+
+
+@st.cache_data(show_spinner=False)
+def _build_csv(_df, _fp):
+    return export_to_csv(_df)
+
+
+@st.cache_data(show_spinner=False)
+def _build_json(_df, _fp):
+    return export_to_json(_df)
+
+
+@st.cache_data(show_spinner=False)
+def _build_geojson(_df, _fp):
+    return export_to_geojson(_df)
+
+
+@st.cache_data(show_spinner=False)
+def _build_excel(_df, _fp):
+    return export_to_excel(_df)
+
+
+@st.cache_data(show_spinner=False)
+def _build_shapefile_bytes(_df, _fp):
+    """Build shapefile ZIP and return bytes (so the temp dir can be cleaned up)."""
+    zip_path = export_to_shapefile(_df)
+    try:
+        with open(zip_path, "rb") as f:
+            return f.read()
+    finally:
+        # Best-effort cleanup of the temp ZIP and its parent dir.
+        try:
+            parent = os.path.dirname(zip_path)
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
+            if parent and os.path.isdir(parent):
+                # Remove parent only if empty after ZIP removal.
+                try:
+                    os.rmdir(parent)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+
+
+def _track_download_cb(fmt: str, rows: int, locs: int):
+    """on_click callback for download buttons — only fires on actual click."""
+    analytics.track_download(
+        data_source=st.session_state.get("current_data_source", "Unknown"),
+        export_format=fmt,
+        rows_count=rows,
+        locations_count=locs,
+    )
+
+
 # Display fetched data
 if st.session_state.fetched_data is not None:
     st.header("📊 Retrieved Data")
-    
+
     df = st.session_state.fetched_data.copy()
     
     # Fix datetime columns for Streamlit display (PyArrow compatibility)
@@ -923,124 +987,107 @@ if st.session_state.fetched_data is not None:
     date_range_str = f"{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}"
     base_filename = f"weather_data_{selected_source.replace(' ', '_')}_{date_range_str}"
     
+    # Use original (unformatted) data for all exports; compute counts once.
+    original_df = st.session_state.fetched_data
+    _fp = _df_fingerprint(original_df)
+    _rows = len(original_df)
+    _locs = (
+        original_df["location_id"].nunique()
+        if "location_id" in original_df.columns else 0
+    )
+
     # Create three columns for the main export formats
     col1, col2, col3 = st.columns(3)
-    
+
     with col1:
         st.subheader("📊 CSV")
         st.caption("Tabular format for Excel/Python/R")
         try:
-            # Use original data for export (not display-formatted)
-            original_df = st.session_state.fetched_data
-            csv_data = export_to_csv(original_df)
-            if st.download_button(
+            csv_data = _build_csv(original_df, _fp)
+            st.download_button(
                 label="📥 Download CSV",
                 data=csv_data,
                 file_name=f"{base_filename}.csv",
                 mime="text/csv",
                 use_container_width=True,
                 key="download_csv",
-            ):
-                # Track download
-                analytics.track_download(
-                    data_source=st.session_state.get('current_data_source', 'Unknown'),
-                    export_format='CSV',
-                    rows_count=len(original_df),
-                    locations_count=original_df['location_id'].nunique() if 'location_id' in original_df.columns else 0
-                )
+                on_click=_track_download_cb,
+                kwargs={"fmt": "CSV", "rows": _rows, "locs": _locs},
+            )
         except Exception as e:
             st.error(f"Error: {str(e)}")
-    
+
     with col2:
         st.subheader("🗺️ Shapefile")
         st.caption("For GIS applications (QGIS/ArcGIS)")
         try:
-            # Use original data for export (not display-formatted)
-            zip_path = export_to_shapefile(original_df)
-            with open(zip_path, "rb") as f:
-                shapefile_data = f.read()
-            if st.download_button(
+            shapefile_data = _build_shapefile_bytes(original_df, _fp)
+            st.download_button(
                 label="📥 Download Shapefile",
                 data=shapefile_data,
                 file_name=f"{base_filename}.zip",
                 mime="application/zip",
                 use_container_width=True,
                 key="download_shapefile",
-            ):
-                analytics.track_download(
-                    data_source=st.session_state.get('current_data_source', 'Unknown'),
-                    export_format='Shapefile',
-                    rows_count=len(df),
-                    locations_count=df['location_id'].nunique() if 'location_id' in df.columns else 0
-                )
+                on_click=_track_download_cb,
+                kwargs={"fmt": "Shapefile", "rows": _rows, "locs": _locs},
+            )
         except Exception as e:
             st.error(f"Error: {str(e)}")
-    
+
     with col3:
         st.subheader("📝 JSON")
         st.caption("For web apps and APIs")
         try:
-            json_data = export_to_json(df)
-            if st.download_button(
+            json_data = _build_json(original_df, _fp)
+            st.download_button(
                 label="📥 Download JSON",
                 data=json_data,
                 file_name=f"{base_filename}.json",
                 mime="application/json",
                 use_container_width=True,
                 key="download_json",
-            ):
-                analytics.track_download(
-                    data_source=st.session_state.get('current_data_source', 'Unknown'),
-                    export_format='JSON',
-                    rows_count=len(df),
-                    locations_count=df['location_id'].nunique() if 'location_id' in df.columns else 0
-                )
+                on_click=_track_download_cb,
+                kwargs={"fmt": "JSON", "rows": _rows, "locs": _locs},
+            )
         except Exception as e:
             st.error(f"Error: {str(e)}")
-    
+
     # Additional formats
     if st.checkbox("📦 More Export Formats", key="more_formats"):
         col_a, col_b = st.columns(2)
-        
+
         with col_a:
             st.markdown("**GeoJSON** (Geographic JSON)")
             try:
-                geojson_data = export_to_geojson(df)
-                if st.download_button(
+                geojson_data = _build_geojson(original_df, _fp)
+                st.download_button(
                     label="📥 Download GeoJSON",
                     data=geojson_data,
                     file_name=f"{base_filename}.geojson",
                     mime="application/geo+json",
                     use_container_width=True,
                     key="download_geojson",
-                ):
-                    analytics.track_download(
-                        data_source=st.session_state.get('current_data_source', 'Unknown'),
-                        export_format='GeoJSON',
-                        rows_count=len(df),
-                        locations_count=df['location_id'].nunique() if 'location_id' in df.columns else 0
-                    )
+                    on_click=_track_download_cb,
+                    kwargs={"fmt": "GeoJSON", "rows": _rows, "locs": _locs},
+                )
             except Exception as e:
                 st.error(f"Error: {str(e)}")
-        
+
         with col_b:
             st.markdown("**Excel** (XLSX)")
             try:
-                excel_data = export_to_excel(df)
-                if st.download_button(
+                excel_data = _build_excel(original_df, _fp)
+                st.download_button(
                     label="📥 Download Excel",
                     data=excel_data,
                     file_name=f"{base_filename}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                     key="download_excel",
-                ):
-                    analytics.track_download(
-                        data_source=st.session_state.get('current_data_source', 'Unknown'),
-                        export_format='Excel',
-                        rows_count=len(df),
-                        locations_count=df['location_id'].nunique() if 'location_id' in df.columns else 0
-                    )
+                    on_click=_track_download_cb,
+                    kwargs={"fmt": "Excel", "rows": _rows, "locs": _locs},
+                )
             except Exception as e:
                 st.error(f"Error: {str(e)}")
 
