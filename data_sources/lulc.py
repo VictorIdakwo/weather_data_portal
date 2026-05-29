@@ -563,6 +563,311 @@ def fetch_lulc_change_from_gdf(
     return df
 
 
+def build_polygon_geodataframe(
+    composition_df: pd.DataFrame,
+    aoi_gdf: gpd.GeoDataFrame,
+    name_col: Optional[str] = None,
+) -> gpd.GeoDataFrame:
+    """Combine a long-form LULC composition DataFrame with the AOI's polygon
+    geometries to produce a spatial GeoDataFrame suitable for Shapefile or
+    GeoJSON export.
+
+    The output has one row per input polygon (joined on polygon_id index)
+    with attribute columns:
+        polygon_name, dataset, year, dominant_class, dominant_pct,
+        class_richness, plus pct_<class_name> and area_<class_name>
+        columns for each class observed in the dataset.
+    Original geometry is preserved.
+    """
+    if composition_df.empty or aoi_gdf.empty:
+        return gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
+
+    # Drop nodata rows; they shouldn't drive dominant-class or percent fields.
+    comp = composition_df[~composition_df["is_nodata"]].copy()
+
+    # Find the dominant class per polygon.
+    idx_max = comp.groupby("polygon_id")["percent"].idxmax()
+    dominant = comp.loc[idx_max, ["polygon_id", "class_name", "percent"]].rename(
+        columns={"class_name": "dominant_class", "percent": "dominant_pct"}
+    )
+
+    # Class richness = number of distinct non-zero classes per polygon.
+    richness = (
+        comp[comp["pixel_count"] > 0]
+        .groupby("polygon_id")["class_name"]
+        .nunique()
+        .rename("class_richness")
+        .reset_index()
+    )
+
+    # Wide percent matrix.
+    pct_wide = comp.pivot_table(
+        index=["polygon_id"],
+        columns="class_name",
+        values="percent",
+        aggfunc="sum",
+        fill_value=0,
+    )
+    pct_wide.columns = [f"pct_{c}" for c in pct_wide.columns]
+
+    # Wide area matrix.
+    area_wide = comp.pivot_table(
+        index=["polygon_id"],
+        columns="class_name",
+        values="area_km2",
+        aggfunc="sum",
+        fill_value=0,
+    )
+    area_wide.columns = [f"area_{c}" for c in area_wide.columns]
+
+    # Pull dataset/year (the same for every row in a single fetch).
+    meta_cols = comp[["polygon_id", "polygon_name", "dataset", "year"]].drop_duplicates(
+        subset=["polygon_id"]
+    )
+
+    attrs = (
+        meta_cols
+        .merge(dominant, on="polygon_id", how="left")
+        .merge(richness, on="polygon_id", how="left")
+        .merge(pct_wide.reset_index(), on="polygon_id", how="left")
+        .merge(area_wide.reset_index(), on="polygon_id", how="left")
+    )
+
+    # Rejoin geometry from the AOI gdf (which the fetcher iterated in order).
+    # Build a lookup by the same polygon_id used during fetch (the gdf row index).
+    if aoi_gdf.crs is None or aoi_gdf.crs.to_epsg() != 4326:
+        aoi_gdf = aoi_gdf.to_crs(4326)
+    aoi_idx = aoi_gdf.reset_index().rename(columns={"index": "polygon_id"})
+    aoi_idx["polygon_id"] = aoi_idx["polygon_id"].astype(int)
+    attrs["polygon_id"] = attrs["polygon_id"].astype(int)
+
+    merged = aoi_idx.merge(attrs, on="polygon_id", how="left")
+
+    # Drop the AOI's own attribute columns to avoid duplicates beyond what
+    # the composition already exposes — keep the geometry and polygon_id.
+    keep = ["polygon_id", "geometry"] + [c for c in attrs.columns if c != "polygon_id"]
+    merged = merged[keep]
+    return gpd.GeoDataFrame(merged, geometry="geometry", crs="EPSG:4326")
+
+
+def build_change_geodataframe(
+    change_df: pd.DataFrame,
+    aoi_gdf: gpd.GeoDataFrame,
+) -> gpd.GeoDataFrame:
+    """Same idea as build_polygon_geodataframe but for change results.
+
+    Output attributes per polygon:
+        polygon_name, dataset, year_from, year_to,
+        changed_area_km2, percent_changed,
+        top_loss_class, top_loss_km2, top_loss_to,
+        top_gain_class, top_gain_km2, top_gain_from
+    """
+    if change_df.empty or aoi_gdf.empty:
+        return gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
+
+    # Drop nodata-tagged rows (none of the real classes — these are the
+    # "No data" placeholders we add when a polygon had no observed pixels).
+    df = change_df.dropna(subset=["from_code", "to_code"]).copy()
+    df["from_code"] = df["from_code"].astype(int)
+    df["to_code"] = df["to_code"].astype(int)
+
+    grouped = []
+    for pid, sub in df.groupby("polygon_id"):
+        changed = sub[~sub["is_unchanged"]]
+        total_area = sub["area_km2"].sum()
+        changed_area = changed["area_km2"].sum()
+        percent_changed = (
+            round(changed_area / total_area * 100, 2) if total_area > 0 else 0.0
+        )
+
+        # Top loss: class with largest outgoing area to a different class.
+        loss_per_class = (
+            changed.groupby("from_class")["area_km2"].sum().sort_values(ascending=False)
+        )
+        if not loss_per_class.empty:
+            top_loss_class = loss_per_class.index[0]
+            top_loss_km2 = round(float(loss_per_class.iloc[0]), 4)
+            # Which target did most of it go to?
+            top_loss_to = (
+                changed[changed["from_class"] == top_loss_class]
+                .groupby("to_class")["area_km2"]
+                .sum()
+                .sort_values(ascending=False)
+                .index[0]
+            )
+        else:
+            top_loss_class = top_loss_to = None
+            top_loss_km2 = 0.0
+
+        # Top gain: class with largest incoming area from a different class.
+        gain_per_class = (
+            changed.groupby("to_class")["area_km2"].sum().sort_values(ascending=False)
+        )
+        if not gain_per_class.empty:
+            top_gain_class = gain_per_class.index[0]
+            top_gain_km2 = round(float(gain_per_class.iloc[0]), 4)
+            top_gain_from = (
+                changed[changed["to_class"] == top_gain_class]
+                .groupby("from_class")["area_km2"]
+                .sum()
+                .sort_values(ascending=False)
+                .index[0]
+            )
+        else:
+            top_gain_class = top_gain_from = None
+            top_gain_km2 = 0.0
+
+        grouped.append({
+            "polygon_id": int(pid),
+            "polygon_name": sub["polygon_name"].iloc[0],
+            "dataset": sub["dataset"].iloc[0],
+            "year_from": int(sub["year_from"].iloc[0]),
+            "year_to": int(sub["year_to"].iloc[0]),
+            "changed_area_km2": round(float(changed_area), 4),
+            "percent_changed": percent_changed,
+            "top_loss_class": top_loss_class,
+            "top_loss_km2": top_loss_km2,
+            "top_loss_to": top_loss_to,
+            "top_gain_class": top_gain_class,
+            "top_gain_km2": top_gain_km2,
+            "top_gain_from": top_gain_from,
+        })
+
+    attrs = pd.DataFrame(grouped)
+
+    if aoi_gdf.crs is None or aoi_gdf.crs.to_epsg() != 4326:
+        aoi_gdf = aoi_gdf.to_crs(4326)
+    aoi_idx = aoi_gdf.reset_index().rename(columns={"index": "polygon_id"})
+    aoi_idx["polygon_id"] = aoi_idx["polygon_id"].astype(int)
+    attrs["polygon_id"] = attrs["polygon_id"].astype(int)
+
+    merged = aoi_idx.merge(attrs, on="polygon_id", how="left")
+    keep = ["polygon_id", "geometry"] + [c for c in attrs.columns if c != "polygon_id"]
+    merged = merged[keep]
+    return gpd.GeoDataFrame(merged, geometry="geometry", crs="EPSG:4326")
+
+
+# ---------------------------------------------------------------------------
+# Raster clip download URLs (per polygon, server-resolved by Earth Engine)
+# ---------------------------------------------------------------------------
+
+def get_raster_clip_url(
+    aoi_gdf: gpd.GeoDataFrame,
+    dataset_name: str,
+    year: int,
+    credentials_dict: Dict,
+    polygon_index: int = 0,
+    fmt: str = "GEO_TIFF",
+    max_pixels_warn: int = 100_000_000,
+) -> Dict:
+    """Return a signed Earth Engine download URL for a single polygon's
+    clipped LULC raster, plus metadata about the request.
+
+    Args:
+        aoi_gdf: GeoDataFrame containing the AOI polygons (any number).
+        dataset_name: One of the supported LULC datasets.
+        year: Year to clip.
+        credentials_dict: EE service-account credentials.
+        polygon_index: Row index of the polygon to clip (0 by default).
+        fmt: 'GEO_TIFF' (default) or 'ZIPPED_GEO_TIFF'. COG variant is
+             not exposed through getDownloadURL; callers wanting a COG
+             should use Export.image.toCloudStorage / toDrive instead
+             (added in Phase 12).
+        max_pixels_warn: Raise a soft warning in the returned dict
+             when the estimated pixel count exceeds this.
+
+    Returns:
+        dict with keys 'url', 'estimated_pixels', 'note', and 'attribution'.
+        Caller is responsible for rendering / surfacing this.
+    """
+    client = EarthEngineClient(credentials_dict=credentials_dict)
+    if not client.initialized:
+        raise RuntimeError("Earth Engine initialization failed")
+
+    if aoi_gdf.crs is None or aoi_gdf.crs.to_epsg() != 4326:
+        aoi_gdf = aoi_gdf.to_crs(4326)
+    if polygon_index < 0 or polygon_index >= len(aoi_gdf):
+        raise IndexError(
+            f"polygon_index {polygon_index} out of range (0..{len(aoi_gdf) - 1})"
+        )
+
+    row = aoi_gdf.iloc[polygon_index]
+    geom = row.geometry
+    ee_geom = ee.Geometry(mapping(geom))
+
+    info = get_dataset_info(dataset_name)
+    scale_m = info["scale"]
+    # All supported class schemes use codes < 255, so cast to uint8 to keep
+    # the clipped raster ~4x smaller than the default int32 encoding —
+    # critical for staying under EE's 50 MB synchronous-request cap.
+    img = _build_lulc_image(dataset_name, year).clip(ee_geom).toUint8()
+
+    # Rough pixel-count estimate from the polygon's bounding box.
+    minx, miny, maxx, maxy = geom.bounds
+    mean_lat = (miny + maxy) / 2.0
+    m_per_deg_lat = 111_320.0
+    m_per_deg_lon = 111_320.0 * math.cos(math.radians(mean_lat))
+    bbox_area_m2 = (
+        max(0.0, (maxx - minx) * m_per_deg_lon)
+        * max(0.0, (maxy - miny) * m_per_deg_lat)
+    )
+    estimated_pixels = int(bbox_area_m2 / (scale_m * scale_m))
+
+    # Earth Engine caps the synchronous download URL at ~50 MB. For a
+    # single-band uint8 raster that's ~50M pixels of raw data; with TIFF
+    # overhead the practical ceiling is closer to ~35-40M pixels. Refuse
+    # client-side before we hit a hard server error.
+    hard_pixel_cap = 35_000_000
+    if estimated_pixels > hard_pixel_cap:
+        raise ValueError(
+            f"Polygon spans an estimated {estimated_pixels:,} pixels at "
+            f"{scale_m} m, exceeding the ~{hard_pixel_cap:,}-pixel cap on "
+            f"Earth Engine's synchronous GeoTIFF endpoint. "
+            f"Options: (1) clip a smaller sub-polygon, "
+            f"(2) wait for the async Export.image.toDrive path in Phase 12, "
+            f"(3) request a coarser scale via scale_override."
+        )
+
+    note = None
+    if estimated_pixels > max_pixels_warn:
+        note = (
+            f"Polygon spans an estimated {estimated_pixels:,} pixels at "
+            f"{scale_m} m. Download may take 30+ seconds and the GeoTIFF "
+            f"will be relatively large."
+        )
+
+    try:
+        url = img.getDownloadURL({
+            "scale": scale_m,
+            "region": ee_geom,
+            "format": fmt,
+            "crs": "EPSG:4326",
+        })
+    except Exception as e:
+        msg = str(e)
+        if "request size" in msg.lower() or "50331648" in msg:
+            raise ValueError(
+                f"Earth Engine rejected the clip request (size limit). "
+                f"Estimated {estimated_pixels:,} pixels — try a smaller "
+                f"polygon or wait for the async export path."
+            ) from e
+        raise
+
+    return {
+        "url": url,
+        "estimated_pixels": estimated_pixels,
+        "scale_m": scale_m,
+        "note": note,
+        "attribution": info["attribution"],
+        "polygon_index": polygon_index,
+        "polygon_name": (
+            str(row.get("name") or row.get("NAME") or f"polygon_{polygon_index}")
+        ),
+        "dataset": dataset_name,
+        "year": year,
+    }
+
+
 def change_to_wide(df: pd.DataFrame, value: str = "area_km2") -> pd.DataFrame:
     """Pivot a change DataFrame into a (from_class) x (to_class) matrix per
     polygon. Returns one row per (polygon, from_class), one column per

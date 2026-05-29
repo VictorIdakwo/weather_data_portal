@@ -128,6 +128,16 @@ if "uploaded_geodataframe" not in st.session_state:
     st.session_state.uploaded_geodataframe = None
 if "lulc_change_long" not in st.session_state:
     st.session_state.lulc_change_long = None
+if "lulc_composition_long" not in st.session_state:
+    st.session_state.lulc_composition_long = None
+if "lulc_aoi_gdf" not in st.session_state:
+    st.session_state.lulc_aoi_gdf = None
+if "lulc_last_dataset" not in st.session_state:
+    st.session_state.lulc_last_dataset = None
+if "lulc_last_year" not in st.session_state:
+    st.session_state.lulc_last_year = None
+if "lulc_last_year_to" not in st.session_state:
+    st.session_state.lulc_last_year_to = None
 
 # Track page visit (once per session)
 analytics.track_visit()
@@ -843,7 +853,8 @@ if source_key == "lulc":
                             df = lulc.change_to_wide(df_long, value="area_km2")
                         else:
                             df = df_long
-                        st.session_state.lulc_change_long = df_long  # for Sankey
+                        st.session_state.lulc_change_long = df_long  # for Sankey + spatial exports
+                        st.session_state.lulc_composition_long = None
                     else:
                         df_long = lulc.fetch_lulc_composition_from_gdf(
                             gdf=aoi_gdf,
@@ -856,6 +867,15 @@ if source_key == "lulc":
                         else:
                             df = df_long
                         st.session_state.lulc_change_long = None
+                        st.session_state.lulc_composition_long = df_long  # for spatial exports
+
+                    # Cache AOI + dataset/year for downstream spatial exports and raster clips.
+                    st.session_state.lulc_aoi_gdf = aoi_gdf
+                    st.session_state.lulc_last_dataset = lulc_dataset
+                    st.session_state.lulc_last_year = int(lulc_year)
+                    st.session_state.lulc_last_year_to = (
+                        int(lulc_year_to) if is_change_mode else None
+                    )
 
                     if df is not None and not df.empty:
                         st.session_state.fetched_data = df
@@ -1236,6 +1256,86 @@ def _build_shapefile_bytes(_df, _fp):
             pass
 
 
+# --- LULC spatial export builders (polygon-attributed) -------------------
+# These take a long-form composition or change DataFrame plus the AOI gdf
+# from session state and emit a real polygon GeoDataFrame, which is then
+# written out to Shapefile/GeoJSON. The output preserves the input
+# polygon geometry and decorates each feature with the LULC attributes.
+
+def _lulc_gdf_fingerprint(long_df, aoi_gdf):
+    """Fingerprint covers both the LULC values and the AOI geometry so the
+    cache invalidates if either the AOI or the data changes."""
+    a = _df_fingerprint(long_df) if long_df is not None else "none"
+    b = (
+        int(pd.util.hash_pandas_object(aoi_gdf.drop(columns="geometry"), index=True).sum())
+        if aoi_gdf is not None and not aoi_gdf.empty else 0
+    )
+    c = len(aoi_gdf) if aoi_gdf is not None else 0
+    return f"{a}-{b}-{c}"
+
+
+@st.cache_data(show_spinner=False)
+def _build_lulc_polygon_gdf(_long_df, _aoi_gdf, _is_change, _fp):
+    """Composite GeoDataFrame from a long-form LULC DF + AOI geometry."""
+    if _is_change:
+        return lulc.build_change_geodataframe(_long_df, _aoi_gdf)
+    return lulc.build_polygon_geodataframe(_long_df, _aoi_gdf)
+
+
+@st.cache_data(show_spinner=False)
+def _build_lulc_geojson_bytes(_long_df, _aoi_gdf, _is_change, _fp):
+    gdf = _build_lulc_polygon_gdf(_long_df, _aoi_gdf, _is_change, _fp)
+    return gdf.to_json().encode("utf-8")
+
+
+@st.cache_data(show_spinner=False)
+def _build_lulc_shapefile_bytes(_long_df, _aoi_gdf, _is_change, _fp):
+    """Write the polygon-attributed GDF to a zipped shapefile."""
+    from utils.shapefile_handler import create_shapefile_zip
+    gdf = _build_lulc_polygon_gdf(_long_df, _aoi_gdf, _is_change, _fp)
+    # Truncate + dedupe columns to obey the .dbf 10-char limit (same
+    # algorithm as the weather Shapefile export in utils/export_handler.py).
+    new_cols = []
+    seen = {}
+    for col in gdf.columns:
+        if col == "geometry":
+            new_cols.append(col)
+            continue
+        base = col[:10]
+        if base not in seen:
+            seen[base] = 0
+            new_cols.append(base)
+        else:
+            seen[base] += 1
+            suffix = f"_{seen[base]}"
+            trimmed = base[: 10 - len(suffix)] + suffix
+            while trimmed in new_cols:
+                seen[base] += 1
+                suffix = f"_{seen[base]}"
+                trimmed = base[: 10 - len(suffix)] + suffix
+            new_cols.append(trimmed)
+    gdf.columns = new_cols
+    temp_dir = tempfile.mkdtemp()
+    output_path = os.path.join(temp_dir, "lulc_export")
+    gdf.to_file(f"{output_path}.shp")
+    zip_path = create_shapefile_zip(output_path)
+    try:
+        with open(zip_path, "rb") as f:
+            return f.read()
+    finally:
+        for ext in (".shp", ".shx", ".dbf", ".prj", ".cpg", ".zip"):
+            try:
+                p = f"{output_path}{ext}"
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        try:
+            os.rmdir(temp_dir)
+        except OSError:
+            pass
+
+
 def _track_download_cb(fmt: str, rows: int, locs: int):
     """on_click callback for download buttons — only fires on actual click."""
     analytics.track_download(
@@ -1386,10 +1486,35 @@ if st.session_state.fetched_data is not None:
         st.subheader("🗺️ Shapefile")
         st.caption("For GIS applications (QGIS/ArcGIS)")
         if is_lulc_result:
-            # LULC composition tables are non-spatial summaries — no point geometry
-            # to write. A polygon-shapefile export with composition attributes will
-            # arrive in Phase 1c (LULC raster + vector export).
-            st.info("ℹ️ Shapefile export of LULC composition will arrive in the next LULC release. Use CSV/JSON/Excel for now.")
+            # Polygon-attributed Shapefile (Phase 1c): one feature per polygon
+            # with dominant_class, percent per class, and area per class.
+            lulc_aoi = st.session_state.get("lulc_aoi_gdf")
+            is_change_res = st.session_state.get("lulc_change_long") is not None
+            long_df = (
+                st.session_state.lulc_change_long
+                if is_change_res
+                else st.session_state.lulc_composition_long
+            )
+            if lulc_aoi is None or long_df is None or long_df.empty:
+                st.info("ℹ️ Spatial export requires a successful LULC fetch first.")
+            else:
+                try:
+                    fp_lulc = _lulc_gdf_fingerprint(long_df, lulc_aoi)
+                    shapefile_data = _build_lulc_shapefile_bytes(
+                        long_df, lulc_aoi, is_change_res, fp_lulc
+                    )
+                    st.download_button(
+                        label="📥 Download Shapefile",
+                        data=shapefile_data,
+                        file_name=f"{base_filename}.zip",
+                        mime="application/zip",
+                        use_container_width=True,
+                        key="download_lulc_shapefile",
+                        on_click=_track_download_cb,
+                        kwargs={"fmt": "Shapefile (LULC polygons)", "rows": _rows, "locs": _locs},
+                    )
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
         else:
             try:
                 shapefile_data = _build_shapefile_bytes(original_df, _fp)
@@ -1431,7 +1556,33 @@ if st.session_state.fetched_data is not None:
         with col_a:
             st.markdown("**GeoJSON** (Geographic JSON)")
             if is_lulc_result:
-                st.info("ℹ️ GeoJSON export of LULC composition will arrive in the next LULC release.")
+                lulc_aoi = st.session_state.get("lulc_aoi_gdf")
+                is_change_res = st.session_state.get("lulc_change_long") is not None
+                long_df = (
+                    st.session_state.lulc_change_long
+                    if is_change_res
+                    else st.session_state.lulc_composition_long
+                )
+                if lulc_aoi is None or long_df is None or long_df.empty:
+                    st.info("ℹ️ Spatial export requires a successful LULC fetch first.")
+                else:
+                    try:
+                        fp_lulc = _lulc_gdf_fingerprint(long_df, lulc_aoi)
+                        geojson_data = _build_lulc_geojson_bytes(
+                            long_df, lulc_aoi, is_change_res, fp_lulc
+                        )
+                        st.download_button(
+                            label="📥 Download GeoJSON",
+                            data=geojson_data,
+                            file_name=f"{base_filename}.geojson",
+                            mime="application/geo+json",
+                            use_container_width=True,
+                            key="download_lulc_geojson",
+                            on_click=_track_download_cb,
+                            kwargs={"fmt": "GeoJSON (LULC polygons)", "rows": _rows, "locs": _locs},
+                        )
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
             else:
                 try:
                     geojson_data = _build_geojson(original_df, _fp)
@@ -1464,6 +1615,73 @@ if st.session_state.fetched_data is not None:
                 )
             except Exception as e:
                 st.error(f"Error: {str(e)}")
+
+    # -------- LULC: raster clip (per-polygon GeoTIFF) ----------------------
+    # Only renders for LULC results. Streams the clip from Earth Engine via
+    # a signed download URL — synchronous, capped at ~33 MP. For very large
+    # AOIs we surface a warning and recommend the async export (Phase 12).
+    if (
+        is_lulc_result
+        and st.session_state.get("lulc_aoi_gdf") is not None
+        and st.session_state.get("lulc_last_dataset")
+    ):
+        st.subheader("🛰️ Raster clip (GeoTIFF)")
+        st.caption(
+            "Download the underlying classified raster clipped to a polygon. "
+            "Earth Engine returns a single-band GeoTIFF with the class code "
+            "at each pixel; use the dataset's class palette to symbolize."
+        )
+        aoi_gdf_state = st.session_state.lulc_aoi_gdf
+        n = len(aoi_gdf_state)
+        polygon_labels = []
+        for i, row in aoi_gdf_state.iterrows():
+            label = (
+                str(row.get("name") or row.get("NAME") or f"polygon_{i}")
+            )
+            polygon_labels.append(label)
+        # Streamlit selectbox needs a stable index basis — use position.
+        sel_idx = st.selectbox(
+            "Polygon to clip",
+            options=list(range(n)),
+            format_func=lambda i: f"{i}: {polygon_labels[i]}",
+            key="lulc_clip_polygon_idx",
+        )
+        clip_year_options = [st.session_state.lulc_last_year]
+        if st.session_state.lulc_last_year_to:
+            clip_year_options.append(st.session_state.lulc_last_year_to)
+        clip_year = st.selectbox(
+            "Year",
+            options=clip_year_options,
+            key="lulc_clip_year",
+        )
+        if st.button("Generate Raster Clip URL", key="lulc_gen_clip_url"):
+            if not ee_credentials:
+                st.error("❌ Earth Engine credentials not found.")
+            else:
+                try:
+                    with st.spinner("Requesting clipped raster from Earth Engine..."):
+                        info = lulc.get_raster_clip_url(
+                            aoi_gdf=aoi_gdf_state,
+                            dataset_name=st.session_state.lulc_last_dataset,
+                            year=int(clip_year),
+                            credentials_dict=ee_credentials,
+                            polygon_index=int(sel_idx),
+                        )
+                    st.success(
+                        f"✅ Clip ready for **{info['polygon_name']}** "
+                        f"({info['dataset']} {info['year']}, {info['scale_m']} m)."
+                    )
+                    if info.get("note"):
+                        st.warning(info["note"])
+                    st.markdown(
+                        f"[⬇️ Download GeoTIFF clip]({info['url']})  •  "
+                        f"Estimated ~{info['estimated_pixels']:,} pixels"
+                    )
+                    st.caption(f"📜 Attribution: {info['attribution']}")
+                except Exception as e:
+                    st.error(f"Raster clip failed: {e}")
+                    if st.checkbox("🔍 Show error", key="lulc_clip_err"):
+                        st.code(str(e))
 
 # Footer
 st.markdown("---")
