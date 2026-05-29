@@ -417,6 +417,173 @@ def fetch_lulc_composition_from_gdf(
     return df
 
 
+def fetch_lulc_change_from_gdf(
+    gdf: gpd.GeoDataFrame,
+    dataset_name: str,
+    year_from: int,
+    year_to: int,
+    credentials_dict: Dict,
+    name_col: Optional[str] = None,
+    scale_override: Optional[int] = None,
+    drop_unchanged: bool = False,
+) -> pd.DataFrame:
+    """For each polygon, compute the per-pixel transition matrix between
+    `year_from` and `year_to` using the same dataset's annual snapshots.
+
+    Returns a long-form DataFrame with columns:
+        polygon_id, polygon_name, dataset, year_from, year_to,
+        from_code, from_class, to_code, to_class, area_km2, percent
+    plus original feature attributes prefixed with `attr_`.
+
+    The transition code is encoded server-side as `from*1000 + to` to keep
+    a single 32-bit channel for frequencyHistogram. Both years must be in
+    the dataset's `years_available` list.
+    """
+    if year_from == year_to:
+        raise ValueError("year_from and year_to must differ for change analysis.")
+
+    client = EarthEngineClient(credentials_dict=credentials_dict)
+    if not client.initialized:
+        raise RuntimeError("Earth Engine initialization failed")
+
+    info = get_dataset_info(dataset_name)
+    years_ok = set(info["years_available"])
+    for y in (year_from, year_to):
+        if y not in years_ok:
+            raise ValueError(
+                f"Year {y} not available for {dataset_name}. "
+                f"Available: {sorted(years_ok)}"
+            )
+    scale_m = scale_override or info["scale"]
+    classes = info["classes"]
+    nodata = set(info["nodata_classes"])
+
+    fc, polygon_meta = _gdf_to_feature_collection(gdf, name_col=name_col)
+    img_a = _build_lulc_image(dataset_name, year_from).toInt()
+    img_b = _build_lulc_image(dataset_name, year_to).toInt()
+    # Encode transition. Multiplier chosen so the largest valid class code
+    # (100 for WorldCover "Moss and lichen") fits without overflow.
+    transition = img_a.multiply(1000).add(img_b).rename("transition")
+
+    reduced = transition.reduceRegions(
+        collection=fc,
+        reducer=ee.Reducer.frequencyHistogram().setOutputs(["histogram"]),
+        scale=scale_m,
+    )
+    server_features = reduced.getInfo().get("features", [])
+
+    histos: Dict[int, Dict] = {}
+    for feat in server_features:
+        props = feat.get("properties") or {}
+        pid = props.get("polygon_id")
+        h = props.get("histogram") or {}
+        if pid is not None:
+            histos[int(pid)] = h
+
+    pixel_area_km2 = (scale_m / 1000.0) ** 2
+    attribution = info["attribution"]
+
+    rows: List[Dict] = []
+    for meta in polygon_meta:
+        pid = meta["polygon_id"]
+        hist = histos.get(pid) or {}
+        # Sum over observed pixels (excluding any (from, to) where either
+        # class is in the dataset's nodata set).
+        observed_total = 0
+        for code_str, cnt in hist.items():
+            try:
+                code = int(code_str)
+            except (TypeError, ValueError):
+                continue
+            f_code = code // 1000
+            t_code = code % 1000
+            if f_code in nodata or t_code in nodata:
+                continue
+            observed_total += int(cnt)
+
+        if observed_total == 0:
+            rows.append({
+                "polygon_id": pid,
+                "polygon_name": meta["polygon_name"],
+                "dataset": dataset_name,
+                "year_from": year_from,
+                "year_to": year_to,
+                "from_code": None,
+                "from_class": "No data",
+                "to_code": None,
+                "to_class": "No data",
+                "area_km2": 0.0,
+                "percent": None,
+                "is_unchanged": False,
+                "attribution": attribution,
+                **{f"attr_{k}": v for k, v in meta["attrs"].items()},
+            })
+            continue
+
+        for code_str, cnt in hist.items():
+            try:
+                code = int(code_str)
+                pixel_count = int(cnt)
+            except (TypeError, ValueError):
+                continue
+            f_code = code // 1000
+            t_code = code % 1000
+            if f_code in nodata or t_code in nodata:
+                continue
+            f_name = classes.get(f_code, f"Unknown ({f_code})")
+            t_name = classes.get(t_code, f"Unknown ({t_code})")
+            unchanged = (f_code == t_code)
+            if drop_unchanged and unchanged:
+                continue
+            area_km2 = round(pixel_count * pixel_area_km2, 4)
+            percent = round(pixel_count / observed_total * 100, 3)
+            rows.append({
+                "polygon_id": pid,
+                "polygon_name": meta["polygon_name"],
+                "dataset": dataset_name,
+                "year_from": year_from,
+                "year_to": year_to,
+                "from_code": f_code,
+                "from_class": f_name,
+                "to_code": t_code,
+                "to_class": t_name,
+                "area_km2": area_km2,
+                "percent": percent,
+                "is_unchanged": unchanged,
+                "attribution": attribution,
+                **{f"attr_{k}": v for k, v in meta["attrs"].items()},
+            })
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(
+            ["polygon_id", "area_km2"],
+            ascending=[True, False],
+        ).reset_index(drop=True)
+    return df
+
+
+def change_to_wide(df: pd.DataFrame, value: str = "area_km2") -> pd.DataFrame:
+    """Pivot a change DataFrame into a (from_class) x (to_class) matrix per
+    polygon. Returns one row per (polygon, from_class), one column per
+    to_class. `value` is 'area_km2' or 'percent'.
+    """
+    if df.empty:
+        return df
+    if value not in ("area_km2", "percent"):
+        raise ValueError("value must be 'area_km2' or 'percent'")
+    keep = ["polygon_id", "polygon_name", "dataset", "year_from", "year_to", "from_class"]
+    wide = df.pivot_table(
+        index=keep,
+        columns="to_class",
+        values=value,
+        aggfunc="sum",
+        fill_value=0,
+    ).reset_index()
+    wide.columns.name = None
+    return wide
+
+
 def composition_to_wide(df: pd.DataFrame, value: str = "percent") -> pd.DataFrame:
     """Pivot a long-form composition DataFrame into one row per polygon
     with one column per class. `value` is either 'percent' or 'area_km2'.

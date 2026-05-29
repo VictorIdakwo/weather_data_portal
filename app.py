@@ -126,6 +126,8 @@ if "current_data_source" not in st.session_state:
     st.session_state.current_data_source = None
 if "uploaded_geodataframe" not in st.session_state:
     st.session_state.uploaded_geodataframe = None
+if "lulc_change_long" not in st.session_state:
+    st.session_state.lulc_change_long = None
 
 # Track page visit (once per session)
 analytics.track_visit()
@@ -235,7 +237,11 @@ data_latency_days = 0
 max_date = datetime.now()
 lulc_dataset = None
 lulc_year = None
+lulc_year_to = None
+lulc_analysis_mode = None
 lulc_output_mode = None
+lulc_show_sankey = False
+lulc_drop_unchanged = False
 
 if source_key == "lulc":
     st.sidebar.subheader("🗺️ LULC Dataset")
@@ -248,18 +254,76 @@ if source_key == "lulc":
     ds_info = lulc.get_dataset_info(lulc_dataset)
     years = ds_info["years_available"]
     default_year = ds_info["default_year"]
-    lulc_year = st.sidebar.selectbox(
-        "Year",
-        options=years,
-        index=years.index(default_year) if default_year in years else len(years) - 1,
-        help="Year to compute land-cover composition for.",
-    )
-    lulc_output_mode = st.sidebar.selectbox(
-        "Output mode",
-        options=["Composition (long)", "Composition (wide pivot)"],
+
+    lulc_analysis_mode = st.sidebar.radio(
+        "Analysis mode",
+        options=["Composition (single year)", "Change (two years)"],
         index=0,
-        help="Long: one row per polygon × class. Wide: one row per polygon, one column per class.",
+        help="Composition = land-cover breakdown at one point in time. Change = transition matrix between two years.",
     )
+
+    if lulc_analysis_mode == "Composition (single year)":
+        lulc_year = st.sidebar.selectbox(
+            "Year",
+            options=years,
+            index=years.index(default_year) if default_year in years else len(years) - 1,
+            help="Year to compute land-cover composition for.",
+        )
+        lulc_output_mode = st.sidebar.selectbox(
+            "Output format",
+            options=["Composition (long)", "Composition (wide pivot)"],
+            index=0,
+            help="Long: one row per polygon × class. Wide: one row per polygon, one column per class.",
+        )
+    else:
+        # Change mode. Requires at least two years available.
+        if len(years) < 2:
+            st.sidebar.error(
+                f"{lulc_dataset} only has one year ({years[0]}) available — "
+                "switch to ESRI Sentinel-2 or Dynamic World for change analysis."
+            )
+            lulc_year = years[0]
+            lulc_year_to = years[0]
+        else:
+            col_a, col_b = st.sidebar.columns(2)
+            with col_a:
+                lulc_year = st.selectbox(
+                    "From",
+                    options=years,
+                    index=0,
+                    key="lulc_year_from",
+                    help="Earlier year (baseline).",
+                )
+            with col_b:
+                later_years = [y for y in years if y > lulc_year]
+                if not later_years:
+                    later_years = [years[-1]]
+                lulc_year_to = st.selectbox(
+                    "To",
+                    options=later_years,
+                    index=len(later_years) - 1,
+                    key="lulc_year_to",
+                    help="Later year (comparison).",
+                )
+        lulc_output_mode = st.sidebar.selectbox(
+            "Output format",
+            options=[
+                "Change (long: every transition)",
+                "Change (wide pivot: from x to matrix)",
+            ],
+            index=0,
+        )
+        lulc_show_sankey = st.sidebar.checkbox(
+            "Show Sankey diagram of transitions",
+            value=True,
+            help="Visualize the flows between classes for the first polygon (or a polygon you pick).",
+        )
+        lulc_drop_unchanged = st.sidebar.checkbox(
+            "Exclude unchanged pixels",
+            value=False,
+            help="Useful when you only care about *what changed* and want a smaller table.",
+        )
+
     st.sidebar.caption(
         f"**Resolution:** {ds_info['scale']} m  •  "
         f"**Host:** {ds_info['host_note']}  •  "
@@ -696,7 +760,14 @@ if source_key == "lulc":
         location_method == "African Countries/Divisions"
         and bool(locations_list)  # locations_list non-empty implies countries chosen
     )
-    lulc_ready = bool(lulc_dataset and lulc_year and (have_uploaded_gdf or have_admin_selection))
+    is_change_mode = lulc_analysis_mode == "Change (two years)"
+    years_ok = (
+        (not is_change_mode and lulc_year is not None)
+        or (is_change_mode and lulc_year is not None and lulc_year_to is not None and lulc_year != lulc_year_to)
+    )
+    lulc_ready = bool(
+        lulc_dataset and years_ok and (have_uploaded_gdf or have_admin_selection)
+    )
 
     if lulc_ready:
         ds_info = lulc.get_dataset_info(lulc_dataset)
@@ -704,13 +775,20 @@ if source_key == "lulc":
             n_polys = len(st.session_state.uploaded_geodataframe)
             aoi_desc = f"{n_polys} polygon(s) from upload"
         else:
-            n_polys = len(set(loc[2].split('_point_')[0] if '_point_' in loc[2] else loc[2] for loc in locations_list))
+            n_polys = len(set(
+                loc[2].split('_point_')[0] if '_point_' in loc[2] else loc[2]
+                for loc in locations_list
+            ))
             aoi_desc = f"{n_polys} admin division(s) (will resolve via FAO GAUL)"
+        if is_change_mode:
+            year_desc = f"{lulc_year} → {lulc_year_to}"
+        else:
+            year_desc = str(lulc_year)
         st.info(f"""
         **Ready to fetch:**
         - 🗺️ Data Source: {selected_source}
         - 📚 Dataset: {lulc_dataset}
-        - 📅 Year: {lulc_year}
+        - 📅 Year(s): {year_desc}
         - 🧭 AOI: {aoi_desc}
         - 📐 Output: {lulc_output_mode}
         - 📏 Resolution: {ds_info['scale']} m
@@ -726,14 +804,17 @@ if source_key == "lulc":
         if not ee_credentials:
             st.error("❌ Earth Engine credentials not found. Add ee_credentials.json or configure Streamlit secrets.")
         else:
-            with st.spinner(f"Fetching {lulc_dataset} for {lulc_year}..."):
+            spinner_msg = (
+                f"Computing {lulc_dataset} change {lulc_year} → {lulc_year_to}..."
+                if is_change_mode else
+                f"Fetching {lulc_dataset} for {lulc_year}..."
+            )
+            with st.spinner(spinner_msg):
                 try:
                     # Resolve AOI: uploaded gdf takes precedence over admin selection.
                     if have_uploaded_gdf:
                         aoi_gdf = st.session_state.uploaded_geodataframe.copy()
                     else:
-                        # Build a polygon gdf from the African admin selection.
-                        # Reuse the same country/division choices the user already made.
                         admin_countries = list(selected_countries) if 'selected_countries' in dir() else []
                         admin_divisions = (
                             dict(selected_divisions) if 'selected_divisions' in dir() and selected_divisions else None
@@ -745,30 +826,52 @@ if source_key == "lulc":
                             credentials_dict=ee_credentials,
                         )
 
-                    df = lulc.fetch_lulc_composition_from_gdf(
-                        gdf=aoi_gdf,
-                        dataset_name=lulc_dataset,
-                        year=int(lulc_year),
-                        credentials_dict=ee_credentials,
-                    )
-
-                    if lulc_output_mode == "Composition (wide pivot)" and not df.empty:
-                        # Keep the original long-form aside in case users want it later;
-                        # for display + export we use the wide pivot.
-                        df = lulc.composition_to_wide(df, value="percent")
+                    if is_change_mode:
+                        df_long = lulc.fetch_lulc_change_from_gdf(
+                            gdf=aoi_gdf,
+                            dataset_name=lulc_dataset,
+                            year_from=int(lulc_year),
+                            year_to=int(lulc_year_to),
+                            credentials_dict=ee_credentials,
+                            drop_unchanged=lulc_drop_unchanged,
+                        )
+                        # Keep long form around for Sankey; pivot for display if asked.
+                        if (
+                            lulc_output_mode == "Change (wide pivot: from x to matrix)"
+                            and not df_long.empty
+                        ):
+                            df = lulc.change_to_wide(df_long, value="area_km2")
+                        else:
+                            df = df_long
+                        st.session_state.lulc_change_long = df_long  # for Sankey
+                    else:
+                        df_long = lulc.fetch_lulc_composition_from_gdf(
+                            gdf=aoi_gdf,
+                            dataset_name=lulc_dataset,
+                            year=int(lulc_year),
+                            credentials_dict=ee_credentials,
+                        )
+                        if lulc_output_mode == "Composition (wide pivot)" and not df_long.empty:
+                            df = lulc.composition_to_wide(df_long, value="percent")
+                        else:
+                            df = df_long
+                        st.session_state.lulc_change_long = None
 
                     if df is not None and not df.empty:
                         st.session_state.fetched_data = df
-                        st.session_state.current_data_source = f"{selected_source} | {lulc_dataset} | {lulc_year}"
-
+                        st.session_state.current_data_source = (
+                            f"{selected_source} | {lulc_dataset} | {year_desc}"
+                        )
                         analytics.track_data_source_usage(
                             data_source=f"{selected_source} | {lulc_dataset}",
-                            parameters=[str(lulc_year), lulc_output_mode],
+                            parameters=[year_desc, lulc_output_mode],
                             locations_count=len(aoi_gdf),
-                            date_range=f"{lulc_year}",
+                            date_range=year_desc,
                         )
-
-                        st.success(f"✅ Land cover composition retrieved: {len(df)} rows across {len(aoi_gdf)} polygon(s).")
+                        st.success(
+                            f"✅ {'Change' if is_change_mode else 'Composition'} retrieved: "
+                            f"{len(df)} rows across {len(aoi_gdf)} polygon(s)."
+                        )
                         st.caption(f"📜 **Attribution:** {lulc.get_dataset_info(lulc_dataset)['attribution']}")
                         st.balloons()
                     else:
@@ -777,6 +880,62 @@ if source_key == "lulc":
                     st.error(f"❌ Error fetching LULC data: {e}")
                     if st.checkbox("🔍 View Error Details", key="lulc_err"):
                         st.code(str(e))
+
+    # --- Sankey diagram for the most recent change result, if requested ---
+    if (
+        lulc_analysis_mode == "Change (two years)"
+        and lulc_show_sankey
+        and st.session_state.get("lulc_change_long") is not None
+        and not st.session_state.lulc_change_long.empty
+    ):
+        change_long = st.session_state.lulc_change_long
+        polygon_names = sorted(change_long["polygon_name"].dropna().unique().tolist())
+        sankey_polygon = st.selectbox(
+            "Sankey: pick a polygon to visualize transitions for",
+            options=polygon_names,
+            index=0,
+            key="lulc_sankey_polygon",
+        )
+        top_n = st.slider(
+            "Show top N transitions by area",
+            min_value=5, max_value=40, value=15, step=5,
+            key="lulc_sankey_topn",
+        )
+        try:
+            import plotly.graph_objects as go
+            sub = change_long[change_long["polygon_name"] == sankey_polygon]
+            sub = sub[~sub["is_unchanged"]].sort_values(
+                "area_km2", ascending=False
+            ).head(top_n)
+            if sub.empty:
+                st.info("No class transitions to display for this polygon.")
+            else:
+                yfrom = int(sub["year_from"].iloc[0])
+                yto = int(sub["year_to"].iloc[0])
+                from_classes = sub["from_class"].unique().tolist()
+                to_classes = sub["to_class"].unique().tolist()
+                labels = (
+                    [f"{c} ({yfrom})" for c in from_classes]
+                    + [f"{c} ({yto})" for c in to_classes]
+                )
+                src = [from_classes.index(r) for r in sub["from_class"]]
+                tgt = [
+                    len(from_classes) + to_classes.index(r)
+                    for r in sub["to_class"]
+                ]
+                vals = sub["area_km2"].astype(float).tolist()
+                fig = go.Figure(go.Sankey(
+                    node=dict(label=labels, pad=15, thickness=18),
+                    link=dict(source=src, target=tgt, value=vals),
+                ))
+                fig.update_layout(
+                    title=f"{sankey_polygon}: {yfrom} → {yto} (top {len(sub)} transitions, km²)",
+                    height=520,
+                    margin=dict(l=10, r=10, t=50, b=10),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.info(f"Sankey unavailable: {e}")
 
 # --- Weather-data preflight + fetch button (existing flow, gated) ----------
 elif selected_params and locations_list and start_date <= end_date:
