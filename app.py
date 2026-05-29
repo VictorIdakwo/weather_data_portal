@@ -6,7 +6,7 @@ import tempfile
 import json
 
 # Import data source modules
-from data_sources import nasa_power, openweather, era5, modis, chirps
+from data_sources import nasa_power, openweather, era5, modis, chirps, lulc
 
 # Import utilities
 from utils.africa_locations import (
@@ -140,6 +140,7 @@ data_sources = {
     "ERA5 (Copernicus)": "era5",
     "MODIS": "modis",
     "CHIRPS": "chirps",
+    "Land Cover (LULC)": "lulc",
 }
 
 selected_source = st.sidebar.selectbox(
@@ -195,137 +196,195 @@ elif source_key == "modis":
 elif source_key == "chirps":
     st.sidebar.success("""
     🌧️ **CHIRPS via Google Earth Engine**
-    
+
     ✅ Now functional!
-    
+
     **Available Data:**
     - Daily precipitation (mm)
     - Global coverage
     - Real CHIRPS data from Earth Engine
-    
+
     **Requirements:**
     Earth Engine service account credentials (provided)
     """)
+elif source_key == "lulc":
+    st.sidebar.success("""
+    🗺️ **Land Cover (LULC) via Google Earth Engine**
 
-# Get available parameters for selected source
-if source_key == "nasa_power":
-    available_params = nasa_power.get_available_parameters()
-    temporal_options = nasa_power.get_temporal_resolutions()
-elif source_key == "openweather":
-    available_params = openweather.get_available_parameters()
-    temporal_options = openweather.get_temporal_resolutions()
-elif source_key == "era5":
-    available_params = era5.get_available_parameters()
-    temporal_options = era5.get_temporal_resolutions()
-elif source_key == "modis":
-    available_params = modis.get_available_parameters()
-    temporal_options = modis.get_temporal_resolutions()
-else:  # chirps
-    available_params = chirps.get_available_parameters()
-    temporal_options = chirps.get_temporal_resolutions()
+    **Available datasets:**
+    - **ESRI Sentinel-2 LULC** (10 m, 2017–2024) — best for annual change
+    - **ESA WorldCover** (10 m, 2020 / 2021) — single-year accuracy benchmark
+    - **Dynamic World** (10 m, 2015–present) — newest data, sub-annual
 
-# Display available parameters by category
-st.sidebar.subheader("📋 Available Parameters")
-selected_params = []
-
-for category, params in available_params.items():
-    # Use markdown header instead of expander to avoid keyboard arrow text
-    st.sidebar.markdown(f"**📁 {category}**")
-    for param_code, param_desc in params.items():
-        # Create unique key by combining source, category, and param_code
-        unique_key = f"param_{source_key}_{category.replace(' ', '_').replace('/', '_')}_{param_code}"
-        if st.sidebar.checkbox(param_desc, key=unique_key):
-            selected_params.append(param_code)
-    st.sidebar.markdown("---")  # Separator between categories
-
-# Remove duplicates while preserving order
-selected_params = list(dict.fromkeys(selected_params))
-
-# Temporal resolution
-st.sidebar.subheader("⏰ Temporal Resolution")
-temporal_resolution = st.sidebar.selectbox(
-    "Select Resolution",
-    options=temporal_options,
-    help="Choose the time interval for data aggregation"
-)
-
-# Date range selection
-st.sidebar.subheader("📅 Date Range")
-
-# Set date ranges based on data source and their latency
-if source_key == "openweather":
-    # OpenWeather allows forecasts up to 7 days
-    max_date = datetime.now() + timedelta(days=7)
-    default_start = datetime.now() - timedelta(days=7)
-    default_end = datetime.now() + timedelta(days=2)
-    data_latency_days = 0
-elif source_key == "nasa_power":
-    # NASA POWER has ~3-7 day data latency
-    data_latency_days = 7
-    max_date = datetime.now() - timedelta(days=data_latency_days)
-    default_start = datetime.now() - timedelta(days=60)  # 2 months ago
-    default_end = datetime.now() - timedelta(days=data_latency_days)
-elif source_key == "era5":
-    # ERA5 has ~5 day latency
-    data_latency_days = 5
-    max_date = datetime.now() - timedelta(days=data_latency_days)
-    default_start = datetime.now() - timedelta(days=60)
-    default_end = datetime.now() - timedelta(days=data_latency_days)
-else:
-    # Other sources - historical data with some latency
-    data_latency_days = 3
-    max_date = datetime.now() - timedelta(days=data_latency_days)
-    default_start = datetime.now() - timedelta(days=30)
-    default_end = datetime.now() - timedelta(days=data_latency_days)
-
-col1, col2 = st.sidebar.columns(2)
-
-with col1:
-    start_date = st.date_input(
-        "Start Date",
-        value=default_start,
-        min_value=datetime(1990, 1, 1),
-        max_value=max_date,
-        help="Select the start date for data retrieval"
-    )
-
-with col2:
-    end_date = st.date_input(
-        "End Date",
-        value=default_end,
-        min_value=datetime(1990, 1, 1),
-        max_value=max_date,
-        help="Select the end date for data retrieval"
-    )
-
-# Validate date range
-if start_date > end_date:
-    st.sidebar.error("⚠️ Start date must be before end date")
-else:
-    date_range_days = (end_date - start_date).days
-    st.sidebar.info(f"📅 Date range: {date_range_days + 1} days")
-    
-    # Show data latency warning
-    if source_key != "openweather" and data_latency_days > 0:
-        days_from_today = (datetime.now().date() - end_date).days
-        if days_from_today < data_latency_days:
-            st.sidebar.warning(f"⏱️ {selected_source} has ~{data_latency_days} day data latency. Latest available data is from {max_date.strftime('%Y-%m-%d')}.")
-
-# API Keys (if needed)
-if source_key == "openweather":
-    st.sidebar.subheader("🔑 API Configuration")
-    api_key = st.sidebar.text_input(
-        "OpenWeather API Key",
-        type="password",
-        help="Enter your OpenWeather API key"
-    )
-elif source_key == "era5":
-    st.sidebar.info("""
-    ℹ️ **No API Key Required!**
-    
-    ERA5 now uses the same Earth Engine credentials as MODIS/CHIRPS.
-    No separate CDS account or token needed.
+    **Output:** per-polygon class composition (area & percent per class)
+    on uploaded shapefile / KML or African admin divisions.
     """)
+
+# Sidebar: LULC-specific controls OR weather-style parameter + date controls
+# ---------------------------------------------------------------------------
+# LULC uses a fundamentally different schema (categorical, annual snapshot,
+# per-polygon area summary), so we branch the sidebar instead of forcing
+# LULC into the weather-data widgets.
+
+selected_params: list = []
+temporal_resolution = None
+start_date = None
+end_date = None
+date_range_days = 0
+data_latency_days = 0
+max_date = datetime.now()
+lulc_dataset = None
+lulc_year = None
+lulc_output_mode = None
+
+if source_key == "lulc":
+    st.sidebar.subheader("🗺️ LULC Dataset")
+    lulc_dataset = st.sidebar.selectbox(
+        "Dataset",
+        options=lulc.get_available_datasets(),
+        index=0,  # ESRI Sentinel-2 LULC is the default
+        help="ESRI = best for annual change. WorldCover = best single-year. Dynamic World = newest.",
+    )
+    ds_info = lulc.get_dataset_info(lulc_dataset)
+    years = ds_info["years_available"]
+    default_year = ds_info["default_year"]
+    lulc_year = st.sidebar.selectbox(
+        "Year",
+        options=years,
+        index=years.index(default_year) if default_year in years else len(years) - 1,
+        help="Year to compute land-cover composition for.",
+    )
+    lulc_output_mode = st.sidebar.selectbox(
+        "Output mode",
+        options=["Composition (long)", "Composition (wide pivot)"],
+        index=0,
+        help="Long: one row per polygon × class. Wide: one row per polygon, one column per class.",
+    )
+    st.sidebar.caption(
+        f"**Resolution:** {ds_info['scale']} m  •  "
+        f"**Host:** {ds_info['host_note']}  •  "
+        f"**License:** {ds_info['license']}"
+    )
+
+else:
+    # ----- Weather-data sidebar (NASA POWER / OpenWeather / ERA5 / MODIS / CHIRPS) -----
+    if source_key == "nasa_power":
+        available_params = nasa_power.get_available_parameters()
+        temporal_options = nasa_power.get_temporal_resolutions()
+    elif source_key == "openweather":
+        available_params = openweather.get_available_parameters()
+        temporal_options = openweather.get_temporal_resolutions()
+    elif source_key == "era5":
+        available_params = era5.get_available_parameters()
+        temporal_options = era5.get_temporal_resolutions()
+    elif source_key == "modis":
+        available_params = modis.get_available_parameters()
+        temporal_options = modis.get_temporal_resolutions()
+    else:  # chirps
+        available_params = chirps.get_available_parameters()
+        temporal_options = chirps.get_temporal_resolutions()
+
+    # Display available parameters by category
+    st.sidebar.subheader("📋 Available Parameters")
+
+    for category, params in available_params.items():
+        # Use markdown header instead of expander to avoid keyboard arrow text
+        st.sidebar.markdown(f"**📁 {category}**")
+        for param_code, param_desc in params.items():
+            # Create unique key by combining source, category, and param_code
+            unique_key = f"param_{source_key}_{category.replace(' ', '_').replace('/', '_')}_{param_code}"
+            if st.sidebar.checkbox(param_desc, key=unique_key):
+                selected_params.append(param_code)
+        st.sidebar.markdown("---")  # Separator between categories
+
+    # Remove duplicates while preserving order
+    selected_params = list(dict.fromkeys(selected_params))
+
+    # Temporal resolution
+    st.sidebar.subheader("⏰ Temporal Resolution")
+    temporal_resolution = st.sidebar.selectbox(
+        "Select Resolution",
+        options=temporal_options,
+        help="Choose the time interval for data aggregation"
+    )
+
+    # Date range selection
+    st.sidebar.subheader("📅 Date Range")
+
+    # Set date ranges based on data source and their latency
+    if source_key == "openweather":
+        # OpenWeather allows forecasts up to 7 days
+        max_date = datetime.now() + timedelta(days=7)
+        default_start = datetime.now() - timedelta(days=7)
+        default_end = datetime.now() + timedelta(days=2)
+        data_latency_days = 0
+    elif source_key == "nasa_power":
+        # NASA POWER has ~3-7 day data latency
+        data_latency_days = 7
+        max_date = datetime.now() - timedelta(days=data_latency_days)
+        default_start = datetime.now() - timedelta(days=60)  # 2 months ago
+        default_end = datetime.now() - timedelta(days=data_latency_days)
+    elif source_key == "era5":
+        # ERA5 has ~5 day latency
+        data_latency_days = 5
+        max_date = datetime.now() - timedelta(days=data_latency_days)
+        default_start = datetime.now() - timedelta(days=60)
+        default_end = datetime.now() - timedelta(days=data_latency_days)
+    else:
+        # Other sources - historical data with some latency
+        data_latency_days = 3
+        max_date = datetime.now() - timedelta(days=data_latency_days)
+        default_start = datetime.now() - timedelta(days=30)
+        default_end = datetime.now() - timedelta(days=data_latency_days)
+
+    col1, col2 = st.sidebar.columns(2)
+
+    with col1:
+        start_date = st.date_input(
+            "Start Date",
+            value=default_start,
+            min_value=datetime(1990, 1, 1),
+            max_value=max_date,
+            help="Select the start date for data retrieval"
+        )
+
+    with col2:
+        end_date = st.date_input(
+            "End Date",
+            value=default_end,
+            min_value=datetime(1990, 1, 1),
+            max_value=max_date,
+            help="Select the end date for data retrieval"
+        )
+
+    # Validate date range
+    if start_date > end_date:
+        st.sidebar.error("⚠️ Start date must be before end date")
+    else:
+        date_range_days = (end_date - start_date).days
+        st.sidebar.info(f"📅 Date range: {date_range_days + 1} days")
+
+        # Show data latency warning
+        if source_key != "openweather" and data_latency_days > 0:
+            days_from_today = (datetime.now().date() - end_date).days
+            if days_from_today < data_latency_days:
+                st.sidebar.warning(f"⏱️ {selected_source} has ~{data_latency_days} day data latency. Latest available data is from {max_date.strftime('%Y-%m-%d')}.")
+
+    # API Keys (if needed)
+    if source_key == "openweather":
+        st.sidebar.subheader("🔑 API Configuration")
+        api_key = st.sidebar.text_input(
+            "OpenWeather API Key",
+            type="password",
+            help="Enter your OpenWeather API key"
+        )
+    elif source_key == "era5":
+        st.sidebar.info("""
+        ℹ️ **No API Key Required!**
+
+        ERA5 now uses the same Earth Engine credentials as MODIS/CHIRPS.
+        No separate CDS account or token needed.
+        """)
 
 # Location selection with glassmorphism header
 st.markdown("""
@@ -623,52 +682,148 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Display fetch summary
-if selected_params and locations_list and start_date <= end_date:
+# ---------------------------------------------------------------------------
+# Fetch summary + dispatch
+# ---------------------------------------------------------------------------
+# Branches by source. LULC is a separate flow because the input shape
+# (polygons, not points) and the output schema (per-polygon class composition,
+# no time axis) differ from the weather sources.
+
+if source_key == "lulc":
+    # Determine if we have a usable polygon AOI
+    have_uploaded_gdf = st.session_state.uploaded_geodataframe is not None
+    have_admin_selection = (
+        location_method == "African Countries/Divisions"
+        and bool(locations_list)  # locations_list non-empty implies countries chosen
+    )
+    lulc_ready = bool(lulc_dataset and lulc_year and (have_uploaded_gdf or have_admin_selection))
+
+    if lulc_ready:
+        ds_info = lulc.get_dataset_info(lulc_dataset)
+        if have_uploaded_gdf:
+            n_polys = len(st.session_state.uploaded_geodataframe)
+            aoi_desc = f"{n_polys} polygon(s) from upload"
+        else:
+            n_polys = len(set(loc[2].split('_point_')[0] if '_point_' in loc[2] else loc[2] for loc in locations_list))
+            aoi_desc = f"{n_polys} admin division(s) (will resolve via FAO GAUL)"
+        st.info(f"""
+        **Ready to fetch:**
+        - 🗺️ Data Source: {selected_source}
+        - 📚 Dataset: {lulc_dataset}
+        - 📅 Year: {lulc_year}
+        - 🧭 AOI: {aoi_desc}
+        - 📐 Output: {lulc_output_mode}
+        - 📏 Resolution: {ds_info['scale']} m
+        """)
+
+    fetch_clicked = st.button(
+        "Fetch Land Cover Data",
+        type="primary",
+        disabled=not lulc_ready,
+        key="fetch_lulc_btn",
+    )
+    if fetch_clicked:
+        if not ee_credentials:
+            st.error("❌ Earth Engine credentials not found. Add ee_credentials.json or configure Streamlit secrets.")
+        else:
+            with st.spinner(f"Fetching {lulc_dataset} for {lulc_year}..."):
+                try:
+                    # Resolve AOI: uploaded gdf takes precedence over admin selection.
+                    if have_uploaded_gdf:
+                        aoi_gdf = st.session_state.uploaded_geodataframe.copy()
+                    else:
+                        # Build a polygon gdf from the African admin selection.
+                        # Reuse the same country/division choices the user already made.
+                        admin_countries = list(selected_countries) if 'selected_countries' in dir() else []
+                        admin_divisions = (
+                            dict(selected_divisions) if 'selected_divisions' in dir() and selected_divisions else None
+                        )
+                        st.info("Resolving admin polygons via FAO GAUL 2015...")
+                        aoi_gdf = lulc.gdf_from_admin_selection(
+                            countries=admin_countries,
+                            divisions=admin_divisions,
+                            credentials_dict=ee_credentials,
+                        )
+
+                    df = lulc.fetch_lulc_composition_from_gdf(
+                        gdf=aoi_gdf,
+                        dataset_name=lulc_dataset,
+                        year=int(lulc_year),
+                        credentials_dict=ee_credentials,
+                    )
+
+                    if lulc_output_mode == "Composition (wide pivot)" and not df.empty:
+                        # Keep the original long-form aside in case users want it later;
+                        # for display + export we use the wide pivot.
+                        df = lulc.composition_to_wide(df, value="percent")
+
+                    if df is not None and not df.empty:
+                        st.session_state.fetched_data = df
+                        st.session_state.current_data_source = f"{selected_source} | {lulc_dataset} | {lulc_year}"
+
+                        analytics.track_data_source_usage(
+                            data_source=f"{selected_source} | {lulc_dataset}",
+                            parameters=[str(lulc_year), lulc_output_mode],
+                            locations_count=len(aoi_gdf),
+                            date_range=f"{lulc_year}",
+                        )
+
+                        st.success(f"✅ Land cover composition retrieved: {len(df)} rows across {len(aoi_gdf)} polygon(s).")
+                        st.caption(f"📜 **Attribution:** {lulc.get_dataset_info(lulc_dataset)['attribution']}")
+                        st.balloons()
+                    else:
+                        st.warning("⚠️ No data returned. Polygon may be outside dataset coverage.")
+                except Exception as e:
+                    st.error(f"❌ Error fetching LULC data: {e}")
+                    if st.checkbox("🔍 View Error Details", key="lulc_err"):
+                        st.code(str(e))
+
+# --- Weather-data preflight + fetch button (existing flow, gated) ----------
+elif selected_params and locations_list and start_date <= end_date:
     date_range_days = (end_date - start_date).days + 1
-    
+
     # Check for OpenWeather historical data limitation
     if source_key == "openweather":
         if end_date < datetime.now().date():
             st.error(f"""
             ❌ **OpenWeather Free Tier Does Not Support Historical Data**
-            
+
             You selected dates in the past: {start_date} to {end_date}
-            
+
             **OpenWeather Free Tier Only Provides:**
             - ✅ Current weather (today)
             - ✅ 7-day forecast (future dates)
             - ❌ Historical data (requires paid subscription)
-            
+
             **Solutions:**
             1. **Use NASA POWER instead** (recommended):
                - Switch Data Source to "NASA POWER"
                - Free historical data from 1981 to ~7 days ago
                - No API key required
-            
+
             2. **Use OpenWeather for current/forecast only**:
                - Select today's date or future dates (up to 7 days)
                - Keep your current API key
-            
+
             3. **Upgrade to OpenWeather One Call API 3.0**:
                - Paid subscription required
                - Visit: https://openweathermap.org/api/one-call-3
             """)
-    
+
     # Check for parameter compatibility with temporal resolution
     if source_key == "nasa_power" and temporal_resolution == "Hourly":
         non_hourly_params = ["T2M_MAX", "T2M_MIN"]
         incompatible = [p for p in selected_params if p in non_hourly_params]
-        
+
         if incompatible:
             st.error(f"""
             ❌ **Incompatible Parameters for Hourly Data**
-            
+
             The following parameters are NOT available for hourly resolution:
             - {', '.join(incompatible)}
-            
+
             **These parameters are only available for Daily resolution.**
-            
+
             **Options:**
             1. Change resolution to **Daily**
             2. Deselect these parameters and use hourly-compatible ones like:
@@ -678,20 +833,20 @@ if selected_params and locations_list and start_date <= end_date:
                - WS2M (Wind Speed)
                - PRECTOTCORR (Precipitation)
             """)
-    
+
     # Warn about large requests
     if source_key == "nasa_power":
         if temporal_resolution == "Hourly" and date_range_days > 90:
             st.warning(f"""
             ⚠️ **Large Data Request Warning**
-            
+
             You're requesting hourly data for {date_range_days} days ({date_range_days * 24:,} hours).
-            
+
             **Recommendations:**
             - For long periods (>3 months), use **Daily** or **Monthly** resolution
             - Hourly data works best for periods up to 30-90 days
             - Large requests may timeout or take several minutes
-            
+
             **Alternative:** Try Daily resolution which will be much faster!
             """)
         elif temporal_resolution == "Daily" and date_range_days > 365:
@@ -699,7 +854,7 @@ if selected_params and locations_list and start_date <= end_date:
             ℹ️ Requesting daily data for {date_range_days} days (~{date_range_days/365:.1f} years).
             This may take 1-2 minutes to fetch.
             """)
-    
+
     st.info(f"""
     **Ready to fetch:**
     - 📊 Data Source: {selected_source}
@@ -709,7 +864,8 @@ if selected_params and locations_list and start_date <= end_date:
     - 📅 Date Range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} ({date_range_days} days)
     """)
 
-if st.button("Fetch Weather Data", type="primary", disabled=not (selected_params and locations_list)):
+# Weather Fetch button (only renders for non-LULC sources)
+if source_key != "lulc" and st.button("Fetch Weather Data", type="primary", disabled=not (selected_params and locations_list)):
     if not selected_params:
         st.error("❌ Please select at least one parameter")
     elif not locations_list:
@@ -955,23 +1111,56 @@ if st.session_state.fetched_data is not None:
     st.subheader("Data Preview")
     st.dataframe(df.head(20))
     
-    # Data summary (use original data for accurate metrics)
+    # Data summary (use original data for accurate metrics). Branch on schema:
+    # weather tables have location_id + date/datetime columns; LULC tables
+    # have polygon_id / polygon_name / class_name instead.
     original_df = st.session_state.fetched_data
+    is_lulc_result = (
+        "polygon_id" in original_df.columns
+        or "class_name" in original_df.columns
+        or any(c in original_df.columns for c in ("class_code", "polygon_name"))
+    )
     col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Records", len(original_df))
-    with col2:
-        st.metric("Locations", original_df["location_id"].nunique())
-    with col3:
-        st.metric("Parameters", len([col for col in original_df.columns if col not in ["date", "datetime", "latitude", "longitude", "location_id", "location_name"]]))
-    with col4:
-        # Display actual date range from data
-        date_col = "datetime" if "datetime" in original_df.columns else "date"
-        if date_col in original_df.columns:
-            min_date = pd.to_datetime(original_df[date_col]).min()
-            max_date = pd.to_datetime(original_df[date_col]).max()
-            date_span = (max_date - min_date).days + 1
-            st.metric("Date Span", f"{date_span} days")
+    if is_lulc_result:
+        with col1:
+            st.metric("Total Rows", len(original_df))
+        with col2:
+            n_polys = (
+                original_df["polygon_id"].nunique()
+                if "polygon_id" in original_df.columns
+                else (original_df["polygon_name"].nunique()
+                      if "polygon_name" in original_df.columns else 0)
+            )
+            st.metric("Polygons", n_polys)
+        with col3:
+            n_classes = (
+                original_df["class_name"].nunique()
+                if "class_name" in original_df.columns
+                else max(0, len([c for c in original_df.columns
+                                 if c not in ("polygon_id", "polygon_name", "dataset", "year")]))
+            )
+            st.metric("Classes", n_classes)
+        with col4:
+            if "year" in original_df.columns:
+                yrs = sorted(set(original_df["year"].dropna().unique()))
+                st.metric("Year", str(yrs[0]) if len(yrs) == 1 else f"{yrs[0]}–{yrs[-1]}")
+            else:
+                st.metric("Year", "—")
+    else:
+        with col1:
+            st.metric("Total Records", len(original_df))
+        with col2:
+            st.metric("Locations", original_df["location_id"].nunique() if "location_id" in original_df.columns else 0)
+        with col3:
+            st.metric("Parameters", len([col for col in original_df.columns if col not in ["date", "datetime", "latitude", "longitude", "location_id", "location_name"]]))
+        with col4:
+            # Display actual date range from data
+            date_col = "datetime" if "datetime" in original_df.columns else "date"
+            if date_col in original_df.columns:
+                min_date = pd.to_datetime(original_df[date_col]).min()
+                max_date = pd.to_datetime(original_df[date_col]).max()
+                date_span = (max_date - min_date).days + 1
+                st.metric("Date Span", f"{date_span} days")
     
     # Data statistics (use original data)
     if st.checkbox("📈 View Data Statistics", key="view_stats"):
@@ -982,19 +1171,36 @@ if st.session_state.fetched_data is not None:
     
     st.markdown("**Choose your preferred format to download:**")
     
-    # Generate base filename with date range
+    # Generate base filename. Weather uses the requested date range;
+    # LULC uses dataset+year (no date range applies).
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    date_range_str = f"{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}"
-    base_filename = f"weather_data_{selected_source.replace(' ', '_')}_{date_range_str}"
-    
+    if is_lulc_result:
+        ds_tag = (lulc_dataset or "lulc").replace(" ", "_").replace("/", "_")
+        yr_tag = str(lulc_year or "year")
+        base_filename = f"landcover_{ds_tag}_{yr_tag}_{timestamp}"
+    else:
+        date_range_str = (
+            f"{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}"
+            if start_date and end_date else timestamp
+        )
+        base_filename = f"weather_data_{selected_source.replace(' ', '_')}_{date_range_str}"
+
     # Use original (unformatted) data for all exports; compute counts once.
     original_df = st.session_state.fetched_data
     _fp = _df_fingerprint(original_df)
     _rows = len(original_df)
-    _locs = (
-        original_df["location_id"].nunique()
-        if "location_id" in original_df.columns else 0
-    )
+    if is_lulc_result:
+        _locs = (
+            original_df["polygon_id"].nunique()
+            if "polygon_id" in original_df.columns
+            else (original_df["polygon_name"].nunique()
+                  if "polygon_name" in original_df.columns else 0)
+        )
+    else:
+        _locs = (
+            original_df["location_id"].nunique()
+            if "location_id" in original_df.columns else 0
+        )
 
     # Create three columns for the main export formats
     col1, col2, col3 = st.columns(3)
@@ -1020,20 +1226,26 @@ if st.session_state.fetched_data is not None:
     with col2:
         st.subheader("🗺️ Shapefile")
         st.caption("For GIS applications (QGIS/ArcGIS)")
-        try:
-            shapefile_data = _build_shapefile_bytes(original_df, _fp)
-            st.download_button(
-                label="📥 Download Shapefile",
-                data=shapefile_data,
-                file_name=f"{base_filename}.zip",
-                mime="application/zip",
-                use_container_width=True,
-                key="download_shapefile",
-                on_click=_track_download_cb,
-                kwargs={"fmt": "Shapefile", "rows": _rows, "locs": _locs},
-            )
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
+        if is_lulc_result:
+            # LULC composition tables are non-spatial summaries — no point geometry
+            # to write. A polygon-shapefile export with composition attributes will
+            # arrive in Phase 1c (LULC raster + vector export).
+            st.info("ℹ️ Shapefile export of LULC composition will arrive in the next LULC release. Use CSV/JSON/Excel for now.")
+        else:
+            try:
+                shapefile_data = _build_shapefile_bytes(original_df, _fp)
+                st.download_button(
+                    label="📥 Download Shapefile",
+                    data=shapefile_data,
+                    file_name=f"{base_filename}.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                    key="download_shapefile",
+                    on_click=_track_download_cb,
+                    kwargs={"fmt": "Shapefile", "rows": _rows, "locs": _locs},
+                )
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
 
     with col3:
         st.subheader("📝 JSON")
@@ -1059,20 +1271,23 @@ if st.session_state.fetched_data is not None:
 
         with col_a:
             st.markdown("**GeoJSON** (Geographic JSON)")
-            try:
-                geojson_data = _build_geojson(original_df, _fp)
-                st.download_button(
-                    label="📥 Download GeoJSON",
-                    data=geojson_data,
-                    file_name=f"{base_filename}.geojson",
-                    mime="application/geo+json",
-                    use_container_width=True,
-                    key="download_geojson",
-                    on_click=_track_download_cb,
-                    kwargs={"fmt": "GeoJSON", "rows": _rows, "locs": _locs},
-                )
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
+            if is_lulc_result:
+                st.info("ℹ️ GeoJSON export of LULC composition will arrive in the next LULC release.")
+            else:
+                try:
+                    geojson_data = _build_geojson(original_df, _fp)
+                    st.download_button(
+                        label="📥 Download GeoJSON",
+                        data=geojson_data,
+                        file_name=f"{base_filename}.geojson",
+                        mime="application/geo+json",
+                        use_container_width=True,
+                        key="download_geojson",
+                        on_click=_track_download_cb,
+                        kwargs={"fmt": "GeoJSON", "rows": _rows, "locs": _locs},
+                    )
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
 
         with col_b:
             st.markdown("**Excel** (XLSX)")
