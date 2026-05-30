@@ -710,7 +710,7 @@ def build_lulc_vector_polygons_gdf(
     year: int,
     credentials_dict: Dict,
     scale_override: Optional[int] = None,
-    max_polygons_per_aoi: int = 10_000,
+    max_polygons_per_aoi: int = 50_000,
 ) -> Tuple[gpd.GeoDataFrame, Dict]:
     """Vectorize the LULC raster inside each AOI polygon into many small
     class polygons — one feature per contiguous patch of one class. The

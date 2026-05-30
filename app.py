@@ -1315,15 +1315,16 @@ def _lulc_vector_fingerprint(aoi_gdf, dataset, year):
 
 
 @st.cache_data(show_spinner=False)
-def _build_lulc_vector_gdf(_aoi_gdf, _dataset, _year, _creds_token, _fp):
+def _build_lulc_vector_gdf(_aoi_gdf, _dataset, _year, _scale, _creds_token, _fp):
     """Vectorize the LULC raster inside each AOI into many class polygons.
-    `_creds_token` is just a tiny token included so the cache invalidates
-    if credentials change; the real call uses the global ee_credentials."""
+    `_creds_token` is included so the cache invalidates if credentials change.
+    `_scale` is an explicit override (None = use dataset's native scale)."""
     gdf, meta = lulc.build_lulc_vector_polygons_gdf(
         aoi_gdf=_aoi_gdf,
         dataset_name=_dataset,
         year=int(_year),
         credentials_dict=ee_credentials,
+        scale_override=_scale,
     )
     return gdf, meta
 
@@ -1335,9 +1336,9 @@ def _build_lulc_geojson_bytes(_long_df, _aoi_gdf, _is_change, _fp):
 
 
 @st.cache_data(show_spinner=False)
-def _build_lulc_vector_geojson_bytes(_aoi_gdf, _dataset, _year, _creds_token, _fp):
-    gdf, _meta = _build_lulc_vector_gdf(_aoi_gdf, _dataset, _year, _creds_token, _fp)
-    return gdf.to_json().encode("utf-8")
+def _build_lulc_vector_geojson_bytes(_aoi_gdf, _dataset, _year, _scale, _creds_token, _fp):
+    gdf, meta = _build_lulc_vector_gdf(_aoi_gdf, _dataset, _year, _scale, _creds_token, _fp)
+    return gdf.to_json().encode("utf-8"), meta
 
 
 @st.cache_data(show_spinner=False)
@@ -1389,11 +1390,11 @@ def _build_lulc_shapefile_bytes(_long_df, _aoi_gdf, _is_change, _fp):
 
 
 @st.cache_data(show_spinner=False)
-def _build_lulc_vector_shapefile_bytes(_aoi_gdf, _dataset, _year, _creds_token, _fp):
+def _build_lulc_vector_shapefile_bytes(_aoi_gdf, _dataset, _year, _scale, _creds_token, _fp):
     """Write the *vectorized* land-cover GDF (many class polygons per AOI)
     to a zipped shapefile suitable for QGIS/ArcGIS styling."""
     from utils.shapefile_handler import create_shapefile_zip
-    gdf, _meta = _build_lulc_vector_gdf(_aoi_gdf, _dataset, _year, _creds_token, _fp)
+    gdf, meta = _build_lulc_vector_gdf(_aoi_gdf, _dataset, _year, _scale, _creds_token, _fp)
     if gdf.empty:
         raise RuntimeError("Vectorize returned no polygons — AOI may not intersect dataset coverage.")
     # 10-char column-dedup, same algorithm used in utils/export_handler.py
@@ -1424,7 +1425,7 @@ def _build_lulc_vector_shapefile_bytes(_aoi_gdf, _dataset, _year, _creds_token, 
     zip_path = create_shapefile_zip(output_path)
     try:
         with open(zip_path, "rb") as f:
-            return f.read()
+            return f.read(), meta
     finally:
         for ext in (".shp", ".shx", ".dbf", ".prj", ".cpg", ".zip"):
             try:
@@ -1625,7 +1626,25 @@ if st.session_state.fetched_data is not None:
                 # one per class patch. Loads into QGIS as a real LULC map.
                 st.caption(
                     "Vectorized land cover — many polygons, one per class patch. "
-                    "Style by `class_name` or `color` in QGIS/ArcGIS."
+                    "Style by `class_name` or `color` in QGIS/ArcGIS. "
+                    "**CSV/JSON composition is computed over the entire AOI** — only "
+                    "this vectorized export is subject to a per-AOI polygon cap."
+                )
+                ds_native = lulc.get_dataset_info(
+                    st.session_state.lulc_last_dataset
+                )["scale"]
+                scale_choices = [ds_native, 30, 100, 250]
+                scale_choices = sorted({s for s in scale_choices if s >= ds_native})
+                vec_scale = st.selectbox(
+                    "Vectorize scale (m/pixel)",
+                    options=scale_choices,
+                    index=0,
+                    key="lulc_vec_shp_scale",
+                    help=(
+                        f"Native is {ds_native} m. Coarser scales (30 / 100 / 250 m) "
+                        "produce far fewer polygons — use them for large AOIs so "
+                        "the output fits in the 50,000-polygons-per-AOI cap."
+                    ),
                 )
                 if st.button(
                     "🧩 Build & download vectorized Shapefile",
@@ -1634,32 +1653,49 @@ if st.session_state.fetched_data is not None:
                     help="Calls Earth Engine to vectorize the LULC raster inside your AOI(s). Can take 10–60 s.",
                 ):
                     try:
-                        with st.spinner("Vectorizing land cover via Earth Engine…"):
+                        with st.spinner(f"Vectorizing land cover at {vec_scale} m via Earth Engine…"):
                             fp_v = _lulc_vector_fingerprint(
                                 lulc_aoi,
                                 st.session_state.lulc_last_dataset,
                                 st.session_state.lulc_last_year,
-                            )
-                            shapefile_data = _build_lulc_vector_shapefile_bytes(
+                            ) + f"-s{vec_scale}"
+                            shp_bytes, shp_meta = _build_lulc_vector_shapefile_bytes(
                                 lulc_aoi,
                                 st.session_state.lulc_last_dataset,
                                 int(st.session_state.lulc_last_year),
+                                int(vec_scale),
                                 "v1",  # creds token
                                 fp_v,
                             )
-                        st.session_state["_lulc_vec_shp_bytes"] = shapefile_data
+                        st.session_state["_lulc_vec_shp_bytes"] = shp_bytes
+                        st.session_state["_lulc_vec_shp_meta"] = shp_meta
                     except Exception as e:
                         st.error(f"Vectorize failed: {e}")
+                if st.session_state.get("_lulc_vec_shp_meta"):
+                    m = st.session_state["_lulc_vec_shp_meta"]
+                    st.caption(
+                        f"📊 {m['total_polygons']:,} polygons at {m['scale_m']} m"
+                    )
+                    if m["truncated"]:
+                        st.warning(
+                            f"⚠️ {m['truncated_count']} AOI(s) hit the "
+                            f"{m['max_polygons_per_aoi']:,}-polygon cap — visible "
+                            "coverage in QGIS is partial. **The CSV composition is "
+                            "still correct over the entire AOI.** To export a "
+                            "complete vectorized map, rebuild at a coarser scale "
+                            "(30, 100, or 250 m) — accuracy of class assignment "
+                            "is preserved; only the polygon count drops."
+                        )
                 if st.session_state.get("_lulc_vec_shp_bytes"):
                     st.download_button(
                         label="📥 Download Shapefile (ready)",
                         data=st.session_state["_lulc_vec_shp_bytes"],
-                        file_name=f"{base_filename}_vector.zip",
+                        file_name=f"{base_filename}_vector_{vec_scale}m.zip",
                         mime="application/zip",
                         use_container_width=True,
                         key="download_lulc_vector_shp",
                         on_click=_track_download_cb,
-                        kwargs={"fmt": "Shapefile (vectorized LULC)", "rows": _rows, "locs": _locs},
+                        kwargs={"fmt": f"Shapefile (vectorized LULC {vec_scale}m)", "rows": _rows, "locs": _locs},
                     )
         else:
             try:
@@ -1731,7 +1767,26 @@ if st.session_state.fetched_data is not None:
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
                 else:
-                    st.caption("Vectorized land cover — many polygons per AOI, one per class patch.")
+                    st.caption(
+                        "Vectorized land cover — many polygons per AOI, one per class patch. "
+                        "**CSV/JSON composition is over the entire AOI**; only this "
+                        "export is subject to the per-AOI polygon cap."
+                    )
+                    ds_native_gj = lulc.get_dataset_info(
+                        st.session_state.lulc_last_dataset
+                    )["scale"]
+                    scale_choices_gj = sorted({ds_native_gj, 30, 100, 250})
+                    scale_choices_gj = [s for s in scale_choices_gj if s >= ds_native_gj]
+                    vec_scale_gj = st.selectbox(
+                        "Vectorize scale (m/pixel)",
+                        options=scale_choices_gj,
+                        index=0,
+                        key="lulc_vec_gj_scale",
+                        help=(
+                            f"Native is {ds_native_gj} m. Use 30/100/250 m for large "
+                            "AOIs that exceed the 50,000-polygon cap."
+                        ),
+                    )
                     if st.button(
                         "🧩 Build & download vectorized GeoJSON",
                         key="lulc_build_vector_gj",
@@ -1739,32 +1794,44 @@ if st.session_state.fetched_data is not None:
                         help="Calls Earth Engine to vectorize the LULC raster inside your AOI(s). Can take 10–60 s.",
                     ):
                         try:
-                            with st.spinner("Vectorizing land cover via Earth Engine…"):
+                            with st.spinner(f"Vectorizing land cover at {vec_scale_gj} m via Earth Engine…"):
                                 fp_v = _lulc_vector_fingerprint(
                                     lulc_aoi,
                                     st.session_state.lulc_last_dataset,
                                     st.session_state.lulc_last_year,
-                                )
-                                geojson_data = _build_lulc_vector_geojson_bytes(
+                                ) + f"-s{vec_scale_gj}"
+                                gj_bytes, gj_meta = _build_lulc_vector_geojson_bytes(
                                     lulc_aoi,
                                     st.session_state.lulc_last_dataset,
                                     int(st.session_state.lulc_last_year),
+                                    int(vec_scale_gj),
                                     "v1",
                                     fp_v,
                                 )
-                            st.session_state["_lulc_vec_gj_bytes"] = geojson_data
+                            st.session_state["_lulc_vec_gj_bytes"] = gj_bytes
+                            st.session_state["_lulc_vec_gj_meta"] = gj_meta
                         except Exception as e:
                             st.error(f"Vectorize failed: {e}")
+                    if st.session_state.get("_lulc_vec_gj_meta"):
+                        m = st.session_state["_lulc_vec_gj_meta"]
+                        st.caption(f"📊 {m['total_polygons']:,} polygons at {m['scale_m']} m")
+                        if m["truncated"]:
+                            st.warning(
+                                f"⚠️ {m['truncated_count']} AOI(s) hit the "
+                                f"{m['max_polygons_per_aoi']:,}-polygon cap. "
+                                "**CSV composition is unaffected.** Rebuild at a "
+                                "coarser scale (30/100/250 m) for full coverage."
+                            )
                     if st.session_state.get("_lulc_vec_gj_bytes"):
                         st.download_button(
                             label="📥 Download GeoJSON (ready)",
                             data=st.session_state["_lulc_vec_gj_bytes"],
-                            file_name=f"{base_filename}_vector.geojson",
+                            file_name=f"{base_filename}_vector_{vec_scale_gj}m.geojson",
                             mime="application/geo+json",
                             use_container_width=True,
                             key="download_lulc_vector_gj",
                             on_click=_track_download_cb,
-                            kwargs={"fmt": "GeoJSON (vectorized LULC)", "rows": _rows, "locs": _locs},
+                            kwargs={"fmt": f"GeoJSON (vectorized LULC {vec_scale_gj}m)", "rows": _rows, "locs": _locs},
                         )
             else:
                 try:
