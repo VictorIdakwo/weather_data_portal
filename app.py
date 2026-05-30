@@ -1296,10 +1296,36 @@ def _lulc_gdf_fingerprint(long_df, aoi_gdf):
 
 @st.cache_data(show_spinner=False)
 def _build_lulc_polygon_gdf(_long_df, _aoi_gdf, _is_change, _fp):
-    """Composite GeoDataFrame from a long-form LULC DF + AOI geometry."""
+    """Polygon summary GDF: ONE feature per input AOI with attributes
+    describing dominant class / change statistics. Used in change mode."""
     if _is_change:
         return lulc.build_change_geodataframe(_long_df, _aoi_gdf)
     return lulc.build_polygon_geodataframe(_long_df, _aoi_gdf)
+
+
+# Cache the vectorized land-cover GDF separately — different inputs and a
+# different runtime cost. Keyed on (aoi fingerprint, dataset, year).
+
+def _lulc_vector_fingerprint(aoi_gdf, dataset, year):
+    a = (
+        int(pd.util.hash_pandas_object(aoi_gdf.drop(columns="geometry"), index=True).sum())
+        if aoi_gdf is not None and not aoi_gdf.empty else 0
+    )
+    return f"{a}-{len(aoi_gdf) if aoi_gdf is not None else 0}-{dataset}-{year}"
+
+
+@st.cache_data(show_spinner=False)
+def _build_lulc_vector_gdf(_aoi_gdf, _dataset, _year, _creds_token, _fp):
+    """Vectorize the LULC raster inside each AOI into many class polygons.
+    `_creds_token` is just a tiny token included so the cache invalidates
+    if credentials change; the real call uses the global ee_credentials."""
+    gdf, meta = lulc.build_lulc_vector_polygons_gdf(
+        aoi_gdf=_aoi_gdf,
+        dataset_name=_dataset,
+        year=int(_year),
+        credentials_dict=ee_credentials,
+    )
+    return gdf, meta
 
 
 @st.cache_data(show_spinner=False)
@@ -1309,8 +1335,14 @@ def _build_lulc_geojson_bytes(_long_df, _aoi_gdf, _is_change, _fp):
 
 
 @st.cache_data(show_spinner=False)
+def _build_lulc_vector_geojson_bytes(_aoi_gdf, _dataset, _year, _creds_token, _fp):
+    gdf, _meta = _build_lulc_vector_gdf(_aoi_gdf, _dataset, _year, _creds_token, _fp)
+    return gdf.to_json().encode("utf-8")
+
+
+@st.cache_data(show_spinner=False)
 def _build_lulc_shapefile_bytes(_long_df, _aoi_gdf, _is_change, _fp):
-    """Write the polygon-attributed GDF to a zipped shapefile."""
+    """Write the polygon-summary GDF to a zipped shapefile (change mode)."""
     from utils.shapefile_handler import create_shapefile_zip
     gdf = _build_lulc_polygon_gdf(_long_df, _aoi_gdf, _is_change, _fp)
     # Truncate + dedupe columns to obey the .dbf 10-char limit (same
@@ -1337,6 +1369,57 @@ def _build_lulc_shapefile_bytes(_long_df, _aoi_gdf, _is_change, _fp):
     gdf.columns = new_cols
     temp_dir = tempfile.mkdtemp()
     output_path = os.path.join(temp_dir, "lulc_export")
+    gdf.to_file(f"{output_path}.shp")
+    zip_path = create_shapefile_zip(output_path)
+    try:
+        with open(zip_path, "rb") as f:
+            return f.read()
+    finally:
+        for ext in (".shp", ".shx", ".dbf", ".prj", ".cpg", ".zip"):
+            try:
+                p = f"{output_path}{ext}"
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        try:
+            os.rmdir(temp_dir)
+        except OSError:
+            pass
+
+
+@st.cache_data(show_spinner=False)
+def _build_lulc_vector_shapefile_bytes(_aoi_gdf, _dataset, _year, _creds_token, _fp):
+    """Write the *vectorized* land-cover GDF (many class polygons per AOI)
+    to a zipped shapefile suitable for QGIS/ArcGIS styling."""
+    from utils.shapefile_handler import create_shapefile_zip
+    gdf, _meta = _build_lulc_vector_gdf(_aoi_gdf, _dataset, _year, _creds_token, _fp)
+    if gdf.empty:
+        raise RuntimeError("Vectorize returned no polygons — AOI may not intersect dataset coverage.")
+    # 10-char column-dedup, same algorithm used in utils/export_handler.py
+    new_cols = []
+    seen = {}
+    for col in gdf.columns:
+        if col == "geometry":
+            new_cols.append(col)
+            continue
+        base = col[:10]
+        if base not in seen:
+            seen[base] = 0
+            new_cols.append(base)
+        else:
+            seen[base] += 1
+            suffix = f"_{seen[base]}"
+            trimmed = base[: 10 - len(suffix)] + suffix
+            while trimmed in new_cols:
+                seen[base] += 1
+                suffix = f"_{seen[base]}"
+                trimmed = base[: 10 - len(suffix)] + suffix
+            new_cols.append(trimmed)
+    gdf = gdf.copy()
+    gdf.columns = new_cols
+    temp_dir = tempfile.mkdtemp()
+    output_path = os.path.join(temp_dir, "lulc_vector")
     gdf.to_file(f"{output_path}.shp")
     zip_path = create_shapefile_zip(output_path)
     try:
@@ -1506,8 +1589,6 @@ if st.session_state.fetched_data is not None:
         st.subheader("🗺️ Shapefile")
         st.caption("For GIS applications (QGIS/ArcGIS)")
         if is_lulc_result:
-            # Polygon-attributed Shapefile (Phase 1c): one feature per polygon
-            # with dominant_class, percent per class, and area per class.
             lulc_aoi = st.session_state.get("lulc_aoi_gdf")
             is_change_res = st.session_state.get("lulc_change_long") is not None
             long_df = (
@@ -1517,24 +1598,69 @@ if st.session_state.fetched_data is not None:
             )
             if lulc_aoi is None or long_df is None or long_df.empty:
                 st.info("ℹ️ Spatial export requires a successful LULC fetch first.")
-            else:
+            elif is_change_res:
+                # Change mode: polygon-attributed summary (one feature per AOI).
+                st.caption(
+                    "One feature per AOI with `percent_changed`, top loss / top gain attributes."
+                )
                 try:
                     fp_lulc = _lulc_gdf_fingerprint(long_df, lulc_aoi)
                     shapefile_data = _build_lulc_shapefile_bytes(
-                        long_df, lulc_aoi, is_change_res, fp_lulc
+                        long_df, lulc_aoi, True, fp_lulc
                     )
                     st.download_button(
                         label="📥 Download Shapefile",
                         data=shapefile_data,
-                        file_name=f"{base_filename}.zip",
+                        file_name=f"{base_filename}_change_summary.zip",
                         mime="application/zip",
                         use_container_width=True,
-                        key="download_lulc_shapefile",
+                        key="download_lulc_shapefile_change",
                         on_click=_track_download_cb,
-                        kwargs={"fmt": "Shapefile (LULC polygons)", "rows": _rows, "locs": _locs},
+                        kwargs={"fmt": "Shapefile (LULC change summary)", "rows": _rows, "locs": _locs},
                     )
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
+            else:
+                # Composition mode: VECTORIZED land cover — many polygons,
+                # one per class patch. Loads into QGIS as a real LULC map.
+                st.caption(
+                    "Vectorized land cover — many polygons, one per class patch. "
+                    "Style by `class_name` or `color` in QGIS/ArcGIS."
+                )
+                if st.button(
+                    "🧩 Build & download vectorized Shapefile",
+                    key="lulc_build_vector_shp",
+                    use_container_width=True,
+                    help="Calls Earth Engine to vectorize the LULC raster inside your AOI(s). Can take 10–60 s.",
+                ):
+                    try:
+                        with st.spinner("Vectorizing land cover via Earth Engine…"):
+                            fp_v = _lulc_vector_fingerprint(
+                                lulc_aoi,
+                                st.session_state.lulc_last_dataset,
+                                st.session_state.lulc_last_year,
+                            )
+                            shapefile_data = _build_lulc_vector_shapefile_bytes(
+                                lulc_aoi,
+                                st.session_state.lulc_last_dataset,
+                                int(st.session_state.lulc_last_year),
+                                "v1",  # creds token
+                                fp_v,
+                            )
+                        st.session_state["_lulc_vec_shp_bytes"] = shapefile_data
+                    except Exception as e:
+                        st.error(f"Vectorize failed: {e}")
+                if st.session_state.get("_lulc_vec_shp_bytes"):
+                    st.download_button(
+                        label="📥 Download Shapefile (ready)",
+                        data=st.session_state["_lulc_vec_shp_bytes"],
+                        file_name=f"{base_filename}_vector.zip",
+                        mime="application/zip",
+                        use_container_width=True,
+                        key="download_lulc_vector_shp",
+                        on_click=_track_download_cb,
+                        kwargs={"fmt": "Shapefile (vectorized LULC)", "rows": _rows, "locs": _locs},
+                    )
         else:
             try:
                 shapefile_data = _build_shapefile_bytes(original_df, _fp)
@@ -1585,24 +1711,61 @@ if st.session_state.fetched_data is not None:
                 )
                 if lulc_aoi is None or long_df is None or long_df.empty:
                     st.info("ℹ️ Spatial export requires a successful LULC fetch first.")
-                else:
+                elif is_change_res:
+                    st.caption("One feature per AOI with change-summary attributes.")
                     try:
                         fp_lulc = _lulc_gdf_fingerprint(long_df, lulc_aoi)
                         geojson_data = _build_lulc_geojson_bytes(
-                            long_df, lulc_aoi, is_change_res, fp_lulc
+                            long_df, lulc_aoi, True, fp_lulc
                         )
                         st.download_button(
                             label="📥 Download GeoJSON",
                             data=geojson_data,
-                            file_name=f"{base_filename}.geojson",
+                            file_name=f"{base_filename}_change_summary.geojson",
                             mime="application/geo+json",
                             use_container_width=True,
-                            key="download_lulc_geojson",
+                            key="download_lulc_geojson_change",
                             on_click=_track_download_cb,
-                            kwargs={"fmt": "GeoJSON (LULC polygons)", "rows": _rows, "locs": _locs},
+                            kwargs={"fmt": "GeoJSON (LULC change summary)", "rows": _rows, "locs": _locs},
                         )
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
+                else:
+                    st.caption("Vectorized land cover — many polygons per AOI, one per class patch.")
+                    if st.button(
+                        "🧩 Build & download vectorized GeoJSON",
+                        key="lulc_build_vector_gj",
+                        use_container_width=True,
+                        help="Calls Earth Engine to vectorize the LULC raster inside your AOI(s). Can take 10–60 s.",
+                    ):
+                        try:
+                            with st.spinner("Vectorizing land cover via Earth Engine…"):
+                                fp_v = _lulc_vector_fingerprint(
+                                    lulc_aoi,
+                                    st.session_state.lulc_last_dataset,
+                                    st.session_state.lulc_last_year,
+                                )
+                                geojson_data = _build_lulc_vector_geojson_bytes(
+                                    lulc_aoi,
+                                    st.session_state.lulc_last_dataset,
+                                    int(st.session_state.lulc_last_year),
+                                    "v1",
+                                    fp_v,
+                                )
+                            st.session_state["_lulc_vec_gj_bytes"] = geojson_data
+                        except Exception as e:
+                            st.error(f"Vectorize failed: {e}")
+                    if st.session_state.get("_lulc_vec_gj_bytes"):
+                        st.download_button(
+                            label="📥 Download GeoJSON (ready)",
+                            data=st.session_state["_lulc_vec_gj_bytes"],
+                            file_name=f"{base_filename}_vector.geojson",
+                            mime="application/geo+json",
+                            use_container_width=True,
+                            key="download_lulc_vector_gj",
+                            on_click=_track_download_cb,
+                            kwargs={"fmt": "GeoJSON (vectorized LULC)", "rows": _rows, "locs": _locs},
+                        )
             else:
                 try:
                     geojson_data = _build_geojson(original_df, _fp)
@@ -1653,17 +1816,21 @@ if st.session_state.fetched_data is not None:
         )
         aoi_gdf_state = st.session_state.lulc_aoi_gdf
         n = len(aoi_gdf_state)
-        polygon_labels = []
-        for i, row in aoi_gdf_state.iterrows():
-            label = (
-                str(row.get("name") or row.get("NAME") or f"polygon_{i}")
-            )
-            polygon_labels.append(label)
-        # Streamlit selectbox needs a stable index basis — use position.
+        # Case-insensitive name lookup (KML's "Name", Shapefile "NAME", etc.)
+        polygon_labels = [
+            lulc.best_polygon_name(row, i)
+            for i, row in aoi_gdf_state.iterrows()
+        ]
+        def _fmt_polygon(i):
+            name = polygon_labels[i]
+            # Replace auto-generated placeholders with friendlier indexing.
+            if name.startswith("polygon_"):
+                return f"Polygon {i + 1}"
+            return name if n == 1 else f"{i + 1}. {name}"
         sel_idx = st.selectbox(
             "Polygon to clip",
             options=list(range(n)),
-            format_func=lambda i: f"{i}: {polygon_labels[i]}",
+            format_func=_fmt_polygon,
             key="lulc_clip_polygon_idx",
         )
         clip_year_options = [st.session_state.lulc_last_year]

@@ -37,6 +37,31 @@ def _to_2d_geometry(geom):
         return geom
     return shapely_transform(lambda x, y, z=None: (x, y), geom)
 
+
+def best_polygon_name(row, idx) -> str:
+    """Pick a human-readable name for a polygon row, checking common name
+    fields case-insensitively (Shapefile, KML, GeoJSON conventions).
+    Falls back to 'polygon_{idx}' so the caller can detect the generic
+    case if it cares."""
+    candidates = (
+        "name", "Name", "NAME",
+        "POLYGONNAM", "PolygonName",
+        "AdminName", "ADM1_NAME", "ADM2_NAME",
+        "description", "Description", "DESCRIPTION",
+    )
+    for c in candidates:
+        if c in row.index:
+            val = row[c]
+            try:
+                if val is None or pd.isna(val):
+                    continue
+            except (TypeError, ValueError):
+                pass
+            s = str(val).strip()
+            if s:
+                return s
+    return f"polygon_{idx}"
+
 from .earth_engine_utils import EarthEngineClient
 
 
@@ -231,15 +256,9 @@ def _gdf_to_feature_collection(
     if gdf.crs is None or gdf.crs.to_epsg() != 4326:
         gdf = gdf.to_crs(4326)
 
-    # Resolve the name column heuristically.
-    if name_col and name_col in gdf.columns:
-        name_field = name_col
-    elif "name" in gdf.columns:
-        name_field = "name"
-    elif "NAME" in gdf.columns:
-        name_field = "NAME"
-    else:
-        name_field = None
+    # Optional explicit override of which column holds the polygon name;
+    # otherwise best_polygon_name() picks one from a list of common fields.
+    name_field = name_col if (name_col and name_col in gdf.columns) else None
 
     features = []
     meta = []
@@ -266,7 +285,7 @@ def _gdf_to_feature_collection(
                 skipped.append((idx, "invalid topology"))
                 continue
         polygon_name = (
-            str(row[name_field]) if name_field else f"polygon_{idx}"
+            str(row[name_field]) if name_field else best_polygon_name(row, idx)
         )
         try:
             ee_geom = ee.Geometry(mapping(geom))
@@ -683,6 +702,151 @@ def build_polygon_geodataframe(
     keep = ["polygon_id", "geometry"] + [c for c in attrs.columns if c != "polygon_id"]
     merged = merged[keep]
     return gpd.GeoDataFrame(merged, geometry="geometry", crs="EPSG:4326")
+
+
+def build_lulc_vector_polygons_gdf(
+    aoi_gdf: gpd.GeoDataFrame,
+    dataset_name: str,
+    year: int,
+    credentials_dict: Dict,
+    scale_override: Optional[int] = None,
+    max_polygons_per_aoi: int = 10_000,
+) -> Tuple[gpd.GeoDataFrame, Dict]:
+    """Vectorize the LULC raster inside each AOI polygon into many small
+    class polygons — one feature per contiguous patch of one class. The
+    output is a GeoDataFrame ready to drop into QGIS or ArcGIS where it
+    will render as a proper land-cover map (style by `class_name` or by
+    `color` for the dataset's recommended palette).
+
+    Attribute columns:
+        parent_id          row index of the input polygon this patch
+                           was vectorized inside of
+        parent             best human-readable name for that polygon
+        dataset            LULC dataset name
+        year               year
+        class_code         numeric class code on the source raster
+        class_name         human-readable class name
+        color              dataset's recommended hex colour for the class
+        area_km2           area of the patch (equal-area projection)
+        attribution        dataset attribution string
+
+    Returns:
+        (gdf, info) where info has 'truncated' (bool), 'truncated_count'
+        (how many AOIs hit the cap), and 'attribution'.
+    """
+    client = EarthEngineClient(credentials_dict=credentials_dict)
+    if not client.initialized:
+        raise RuntimeError("Earth Engine initialization failed")
+
+    if aoi_gdf.crs is None or aoi_gdf.crs.to_epsg() != 4326:
+        aoi_gdf = aoi_gdf.to_crs(4326)
+
+    info = get_dataset_info(dataset_name)
+    scale_m = scale_override or info["scale"]
+    classes = info["classes"]
+    nodata = set(info["nodata_classes"])
+    palette = info.get("palette") or {}
+    attribution = info["attribution"]
+
+    base_img = _build_lulc_image(dataset_name, year).toUint8()
+
+    from shapely.geometry import shape
+
+    all_features: List[Dict] = []
+    truncated_aois = 0
+
+    for parent_idx, row in aoi_gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+        geom = _to_2d_geometry(geom)
+        if geom.geom_type not in ("Polygon", "MultiPolygon"):
+            continue
+        if not geom.is_valid:
+            try:
+                geom = geom.buffer(0)
+            except Exception:
+                continue
+            if geom.is_empty or geom.geom_type not in ("Polygon", "MultiPolygon"):
+                continue
+
+        ee_geom = ee.Geometry(mapping(geom))
+        clipped = base_img.clip(ee_geom)
+
+        try:
+            vectors = clipped.reduceToVectors(
+                reducer=ee.Reducer.countEvery(),
+                geometry=ee_geom,
+                scale=scale_m,
+                geometryType="polygon",
+                eightConnected=False,
+                labelProperty="class",
+                maxPixels=1e10,
+                bestEffort=True,
+            )
+            # Pull max+1 so we can detect truncation.
+            v_list = vectors.toList(max_polygons_per_aoi + 1).getInfo()
+        except Exception as e:
+            raise RuntimeError(
+                f"Earth Engine could not vectorize polygon {parent_idx}: {e}. "
+                "Try a smaller AOI, or pass scale_override (e.g. 30 or 100)."
+            ) from e
+
+        if len(v_list) > max_polygons_per_aoi:
+            truncated_aois += 1
+            v_list = v_list[:max_polygons_per_aoi]
+
+        parent_name = best_polygon_name(row, parent_idx)
+
+        for feat in v_list:
+            props = feat.get("properties") or {}
+            try:
+                class_code = int(props.get("class", -1))
+            except (TypeError, ValueError):
+                continue
+            if class_code < 0 or class_code in nodata:
+                continue
+            class_name = classes.get(class_code, f"Unknown ({class_code})")
+            color = palette.get(class_code)
+            geom_json = feat.get("geometry")
+            try:
+                geom_shp = shape(geom_json)
+            except Exception:
+                continue
+            all_features.append({
+                "parent_id": int(parent_idx),
+                "parent": parent_name,
+                "dataset": dataset_name,
+                "year": year,
+                "class_code": class_code,
+                "class_name": class_name,
+                "color": color,
+                "attribution": attribution,
+                "geometry": geom_shp,
+            })
+
+    if not all_features:
+        gdf_out = gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
+    else:
+        gdf_out = gpd.GeoDataFrame(all_features, geometry="geometry", crs="EPSG:4326")
+        # Equal-area projection for accurate km² figures.
+        try:
+            gdf_proj = gdf_out.to_crs("ESRI:54034")  # World Cylindrical Equal Area
+            gdf_out["area_km2"] = (gdf_proj.area / 1_000_000).round(5)
+        except Exception:
+            gdf_out["area_km2"] = None
+
+    meta = {
+        "truncated": truncated_aois > 0,
+        "truncated_count": truncated_aois,
+        "max_polygons_per_aoi": max_polygons_per_aoi,
+        "attribution": attribution,
+        "scale_m": scale_m,
+        "dataset": dataset_name,
+        "year": year,
+        "total_polygons": len(gdf_out),
+    }
+    return gdf_out, meta
 
 
 def build_change_geodataframe(
