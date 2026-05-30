@@ -24,6 +24,18 @@ import ee
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry import mapping
+from shapely.ops import transform as shapely_transform
+
+
+def _to_2d_geometry(geom):
+    """Drop any Z (altitude) coordinate from a shapely geometry. KMLs
+    routinely carry 3D coordinates (lon, lat, altitude) that produce
+    'Invalid GeoJSON geometry' errors on the Earth Engine side."""
+    if geom is None or geom.is_empty:
+        return geom
+    if not getattr(geom, "has_z", False):
+        return geom
+    return shapely_transform(lambda x, y, z=None: (x, y), geom)
 
 from .earth_engine_utils import EarthEngineClient
 
@@ -231,17 +243,36 @@ def _gdf_to_feature_collection(
 
     features = []
     meta = []
+    skipped = []
     for idx, row in gdf.iterrows():
         geom = row.geometry
         if geom is None or geom.is_empty:
+            skipped.append((idx, "empty"))
             continue
         # Only handle polygonal geometry for LULC composition.
         if geom.geom_type not in ("Polygon", "MultiPolygon"):
+            skipped.append((idx, f"unsupported geometry type: {geom.geom_type}"))
             continue
+        # Drop Z if present (KML 3D quirk) and repair self-intersections so
+        # Earth Engine accepts the resulting GeoJSON.
+        geom = _to_2d_geometry(geom)
+        if not geom.is_valid:
+            try:
+                geom = geom.buffer(0)
+            except Exception:
+                skipped.append((idx, "invalid topology and buffer(0) failed"))
+                continue
+            if geom.is_empty or geom.geom_type not in ("Polygon", "MultiPolygon"):
+                skipped.append((idx, "invalid topology"))
+                continue
         polygon_name = (
             str(row[name_field]) if name_field else f"polygon_{idx}"
         )
-        ee_geom = ee.Geometry(mapping(geom))
+        try:
+            ee_geom = ee.Geometry(mapping(geom))
+        except Exception as e:
+            skipped.append((idx, f"EE rejected geometry: {e}"))
+            continue
         features.append(ee.Feature(ee_geom, {"polygon_id": int(idx)}))
         # Stash original attributes for downstream join.
         attrs = {
@@ -256,7 +287,11 @@ def _gdf_to_feature_collection(
         })
 
     if not features:
-        raise ValueError("No polygon geometries found in input.")
+        details = "; ".join(f"row {i}: {why}" for i, why in skipped[:5]) or "no rows"
+        raise ValueError(
+            "No usable polygon geometries found in input. "
+            f"Reasons: {details}"
+        )
 
     return ee.FeatureCollection(features), meta
 

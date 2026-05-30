@@ -608,26 +608,34 @@ with left_col:
                 
                 # Extract locations with polygon sampling
                 locations_dict = extract_locations_from_shapefile(gdf, use_polygon_sampling=True)
-                
-                # Show sampling summary
-                summary = get_sampling_summary(locations_dict)
-                if summary['sampling_points'] > 0:
-                    st.info(f"""
-                    📊 **Polygon Sampling Active**
-                    - **{summary['num_polygons']}** polygon(s) detected
-                    - **{summary['sampling_points']}** sampling points generated
-                    - **{summary['avg_points_per_polygon']:.1f}** points per polygon (average)
-                    - Weather data will be downloaded for all sampling points
-                    """)
-                
+
+                # Sampling summary is only meaningful for weather sources that
+                # actually query per-point. LULC uses the polygon directly.
+                if source_key != "lulc":
+                    summary = get_sampling_summary(locations_dict)
+                    if summary['sampling_points'] > 0:
+                        st.info(f"""
+                        📊 **Polygon Sampling Active**
+                        - **{summary['num_polygons']}** polygon(s) detected
+                        - **{summary['sampling_points']}** sampling points generated
+                        - **{summary['avg_points_per_polygon']:.1f}** points per polygon (average)
+                        - Weather data will be downloaded for all sampling points
+                        """)
+                else:
+                    st.info(
+                        f"🗺️ **{len(gdf)} polygon(s) ready for LULC analysis.** "
+                        "Land-cover composition is computed on the polygon directly — "
+                        "no point sampling is used."
+                    )
+
                 # Validate locations
                 is_valid, error_msg = validate_shapefile_locations(locations_dict)
                 if not is_valid:
                     st.warning(f"⚠️ Warning: {error_msg}")
-                
+
                 # Convert to expected tuple format: (lat, lon, name)
                 locations_list = [(loc["lat"], loc["lon"], loc["name"]) for loc in locations_dict]
-                
+
             except Exception as e:
                 st.error(f"❌ Error processing shapefile: {str(e)}")
                 st.session_state.uploaded_geodataframe = None
@@ -670,17 +678,25 @@ with left_col:
                 
                 # Extract locations with polygon sampling
                 locations_dict = extract_locations_from_kml(gdf, use_polygon_sampling=True)
-                
-                # Show sampling summary
-                summary = get_sampling_summary(locations_dict)
-                if summary['sampling_points'] > 0:
-                    st.info(f"""
-                    📊 **Polygon Sampling Active**
-                    - **{summary['num_polygons']}** polygon(s) detected
-                    - **{summary['sampling_points']}** sampling points generated
-                    - **{summary['avg_points_per_polygon']:.1f}** points per polygon (average)
-                    - Weather data will be downloaded for all sampling points
-                    """)
+
+                # Sampling summary is only meaningful for weather sources that
+                # actually query per-point. LULC uses the polygon directly.
+                if source_key != "lulc":
+                    summary = get_sampling_summary(locations_dict)
+                    if summary['sampling_points'] > 0:
+                        st.info(f"""
+                        📊 **Polygon Sampling Active**
+                        - **{summary['num_polygons']}** polygon(s) detected
+                        - **{summary['sampling_points']}** sampling points generated
+                        - **{summary['avg_points_per_polygon']:.1f}** points per polygon (average)
+                        - Weather data will be downloaded for all sampling points
+                        """)
+                else:
+                    st.info(
+                        f"🗺️ **{len(gdf)} polygon(s) ready for LULC analysis.** "
+                        "Land-cover composition is computed on the polygon directly — "
+                        "no point sampling is used."
+                    )
                 
                 # Validate locations
                 is_valid, error_msg = validate_kml_locations(locations_dict)
@@ -733,13 +749,17 @@ with right_col:
 
 # Display selected locations
 if locations_list:
-    st.success(f"✅ {len(locations_list)} location(s) selected")
-    
+    if source_key == "lulc" and st.session_state.uploaded_geodataframe is not None:
+        n_poly = len(st.session_state.uploaded_geodataframe)
+        st.success(f"✅ {n_poly} polygon(s) ready for LULC analysis")
+    else:
+        st.success(f"✅ {len(locations_list)} location(s) selected")
+
     if st.checkbox("📍 View Selected Locations", key="view_locations"):
         # locations_list format: [(lat, lon, name), ...]
         df_locations = pd.DataFrame(locations_list, columns=["Latitude", "Longitude", "Location Name"])
         st.dataframe(df_locations)
-    
+
     st.session_state.selected_locations = locations_list
 
 # Fetch Data section with glassmorphism header
