@@ -160,7 +160,7 @@ data_sources = {
     "Vegetation Phenology (annual)": "phenology",
     "Hydrology (Global Surface Water)": "hydrology",
     "Soil Moisture (SMAP)": "soil_moisture",
-    "Burned Area (MODIS)": "land_degradation",
+    "Fire (MODIS burned area + FIRMS)": "land_degradation",
 }
 
 selected_source = st.sidebar.selectbox(
@@ -271,21 +271,23 @@ elif source_key == "drought_indices":
     """)
 elif source_key == "land_degradation":
     st.sidebar.success("""
-    🔥 **Burned Area (MODIS MCD64A1)**
+    🔥 **Fire (MODIS burned area + FIRMS active fires)**
 
-    Monthly burned area per polygon, at 500 m resolution.
-    Coverage: November 2000 → present.
+    Monthly per-polygon fire statistics from two complementary
+    products, requestable together or independently.
 
-    **Outputs:**
-    - **BURNED_AREA_KM2** — burned pixels × pixel area
-    - **PERCENT_BURNED** — burned area / polygon area × 100
+    **MODIS MCD64A1 (post-hoc burned area, ~60–90 day latency):**
+    - `BURNED_AREA_KM2` — burned pixels × pixel area
+    - `PERCENT_BURNED` — burned / polygon area × 100
+
+    **FIRMS active fires (near-real-time, ~3-hour latency):**
+    - `FIRE_DETECTIONS` — count of fire pixel-days in the month
+    - `MEAN_BRIGHTNESS_K` — mean T21 brightness at fire pixels (K)
+    - `MEAN_CONFIDENCE` — mean detection confidence (0–100)
 
     **Input:** upload a shapefile / KML polygon, or pick an African
     country / division. Point-only input is not supported for this
-    source — burn extent needs a real polygon.
-
-    **Latency:** ~2–3 months. Results for the very latest month may
-    be zeros until MODIS finalises the product.
+    source — fire statistics need a real polygon.
     """)
 elif source_key == "soil_moisture":
     st.sidebar.success("""
