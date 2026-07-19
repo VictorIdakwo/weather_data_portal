@@ -350,6 +350,7 @@ def fetch_era5_data(
     end_date: str,
     credentials_dict: Dict = None,
     chunk_days: int = 30,
+    use_daily_aggregate: bool = False,
 ) -> pd.DataFrame:
     """
     Fetch ERA5-Land hourly data via Google Earth Engine.
@@ -374,27 +375,60 @@ def fetch_era5_data(
     if not client.initialized:
         raise Exception("Earth Engine initialization failed")
 
-    print(f"Fetching ERA5-Land data from {start_date} to {end_date}...")
+    # Two backing assets: HOURLY for hourly requests, DAILY_AGGR for daily.
+    # DAILY_AGGR gives ~24x smaller payload than sampling HOURLY and
+    # aggregating client-side. Precipitation band is named differently on
+    # each collection so the mapping needs a branch.
+    if use_daily_aggregate:
+        asset_id = 'ECMWF/ERA5_LAND/DAILY_AGGR'
+        param_map = {
+            '2m_temperature': 'temperature_2m',
+            'temperature_2m': 'temperature_2m',
+            '2m_dewpoint_temperature': 'dewpoint_temperature_2m',
+            'dewpoint_temperature_2m': 'dewpoint_temperature_2m',
+            'total_precipitation': 'total_precipitation_sum',
+            'surface_pressure': 'surface_pressure',
+            '10m_u_component_of_wind': 'u_component_of_wind_10m',
+            '10m_v_component_of_wind': 'v_component_of_wind_10m',
+            'u_component_of_wind_10m': 'u_component_of_wind_10m',
+            'v_component_of_wind_10m': 'v_component_of_wind_10m',
+        }
+        ts_fmt = 'YYYY-MM-dd'
+    else:
+        asset_id = 'ECMWF/ERA5_LAND/HOURLY'
+        param_map = {
+            '2m_temperature': 'temperature_2m',
+            'temperature_2m': 'temperature_2m',
+            '2m_dewpoint_temperature': 'dewpoint_temperature_2m',
+            'dewpoint_temperature_2m': 'dewpoint_temperature_2m',
+            'total_precipitation': 'total_precipitation',
+            'surface_pressure': 'surface_pressure',
+            '10m_u_component_of_wind': 'u_component_of_wind_10m',
+            '10m_v_component_of_wind': 'v_component_of_wind_10m',
+            'u_component_of_wind_10m': 'u_component_of_wind_10m',
+            'v_component_of_wind_10m': 'v_component_of_wind_10m',
+        }
+        ts_fmt = 'YYYY-MM-dd HH:mm'
 
-    # User-facing param -> ERA5-Land band name on the EE collection.
-    param_map = {
-        '2m_temperature': 'temperature_2m',
-        'temperature_2m': 'temperature_2m',
-        '2m_dewpoint_temperature': 'dewpoint_temperature_2m',
-        'dewpoint_temperature_2m': 'dewpoint_temperature_2m',
-        'total_precipitation': 'total_precipitation',  # Hourly accumulation
-        'surface_pressure': 'surface_pressure',
-        '10m_u_component_of_wind': 'u_component_of_wind_10m',
-        '10m_v_component_of_wind': 'v_component_of_wind_10m',
-        'u_component_of_wind_10m': 'u_component_of_wind_10m',
-        'v_component_of_wind_10m': 'v_component_of_wind_10m',
-    }
+    print(f"Fetching ERA5-Land from {asset_id}  {start_date}..{end_date}  ({len(locations)} pts)")
 
-    # Resolve bands and keep both directions of the mapping.
+    # 2m relative humidity is not an ERA5-Land band but can be derived from
+    # temperature and dewpoint via the Magnus formula. Silently upgrade the
+    # fetch list so the raw T + Td come back too, then compute RH after
+    # the download.
+    need_rh = '2m_relative_humidity' in parameters
+    fetch_params = list(parameters)
+    if need_rh:
+        for req in ('2m_temperature', '2m_dewpoint_temperature'):
+            if req not in fetch_params:
+                fetch_params.append(req)
+        fetch_params = [p for p in fetch_params if p != '2m_relative_humidity']
+
+    # Resolve bands (one entry per unique EE band).
     band_names = []
     band_to_user_param = {}
     skipped = []
-    for p in parameters:
+    for p in fetch_params:
         b = param_map.get(p)
         if b is None:
             skipped.append(p)
@@ -403,79 +437,97 @@ def fetch_era5_data(
             band_names.append(b)
             band_to_user_param[b] = p
     if skipped:
-        print(f"  [WARN] ERA5 params not available via Earth Engine and skipped: {', '.join(skipped)}")
+        print(f"  [WARN] ERA5 params not available on this EE asset and skipped: {', '.join(skipped)}")
     if not band_names:
         print("[WARNING] No supported ERA5 bands selected; nothing to fetch.")
         return pd.DataFrame()
 
-    collection = ee.ImageCollection('ECMWF/ERA5_LAND/HOURLY').select(band_names)
+    collection = ee.ImageCollection(asset_id).select(band_names)
 
     start_dt = datetime.strptime(start_date, '%Y-%m-%d')
     end_dt = datetime.strptime(end_date, '%Y-%m-%d')
     if end_dt <= start_dt:
         return pd.DataFrame()
 
-    all_records = []
-
+    # Build ONE FeatureCollection for all points. Every reduceRegions call
+    # now samples every point in one round-trip instead of iterating
+    # locations sequentially (which for 500+ points was the primary
+    # bottleneck making the fetch feel non-terminating).
+    features = []
     for idx, (lat, lon) in enumerate(locations):
-        print(f"  Processing location {idx + 1}/{len(locations)}: ({lat}, {lon})")
-        point = ee.Geometry.Point([lon, lat])
+        pt = ee.Geometry.Point([lon, lat])
+        features.append(ee.Feature(pt, {
+            'location_id': int(idx),
+            'lat': float(lat),
+            'lon': float(lon),
+        }))
+    fc = ee.FeatureCollection(features)
 
-        cur = start_dt
-        while cur < end_dt:
-            chunk_end = min(cur + timedelta(days=chunk_days), end_dt)
-            cs, ce = cur.strftime('%Y-%m-%d'), chunk_end.strftime('%Y-%m-%d')
+    # server-side sample_image: for each image in the filtered collection,
+    # sample all points in one reduceRegions call, then set the timestamp
+    # on each returned feature. flatten() turns a FeatureCollection of
+    # FeatureCollections into one flat list.
+    def _sample_image(image):
+        sampled = image.reduceRegions(
+            collection=fc,
+            reducer=ee.Reducer.first(),
+            scale=11132,
+            tileScale=4,
+        )
+        ts = ee.Date(image.get('system:time_start')).format(ts_fmt)
+        return sampled.map(lambda f: f.set('datetime', ts))
 
-            try:
-                filtered = collection.filterDate(cs, ce)
+    all_records = []
+    cur = start_dt
+    while cur < end_dt:
+        chunk_end = min(cur + timedelta(days=chunk_days), end_dt)
+        cs, ce = cur.strftime('%Y-%m-%d'), chunk_end.strftime('%Y-%m-%d')
 
-                def extract_values(image):
-                    vals = image.reduceRegion(
-                        reducer=ee.Reducer.first(),
-                        geometry=point,
-                        scale=11132,  # ~11 km
-                    )
-                    ts = ee.Date(image.get('system:time_start')).format('YYYY-MM-dd HH:mm')
-                    # Carry the timestamp on the same Feature as the band values.
-                    return ee.Feature(None, vals.set('datetime', ts))
-
-                # 2000 is well above the worst-case for a 30-day chunk (720) and
-                # leaves headroom for slightly wider chunks if callers tune it.
-                feature_list = filtered.map(extract_values).toList(2000).getInfo()
-
-                for feat in feature_list:
-                    props = feat.get('properties') or {}
-                    if not props:
-                        continue
-                    record = {
-                        'datetime': props.get('datetime'),
-                        'latitude': lat,
-                        'longitude': lon,
-                        'location_id': idx,
-                    }
-                    has_data = False
-                    for band in band_names:
-                        v = props.get(band)
-                        out_col = band_to_user_param[band]
-                        if v is None:
-                            record[out_col] = None
-                            continue
-                        # Unit conversions
-                        if 'temperature' in band:
-                            v = v - 273.15            # K -> °C
-                        elif 'precipitation' in band:
-                            v = v * 1000              # m -> mm
-                        elif 'pressure' in band:
-                            v = v / 100               # Pa -> hPa
-                        record[out_col] = round(v, 2)
-                        has_data = True
-                    if has_data:
-                        all_records.append(record)
-
-            except Exception as e:
-                print(f"    [ERROR] chunk {cs}..{ce}: {e}")
-
+        try:
+            filtered = collection.filterDate(cs, ce)
+            all_samples = filtered.map(_sample_image).flatten()
+            server_features = all_samples.getInfo().get('features', [])
+            print(f"    chunk {cs}..{ce}: {len(server_features):,} records")
+        except Exception as e:
+            print(f"    [ERROR] chunk {cs}..{ce}: {e}")
             cur = chunk_end
+            continue
+
+        for feat in server_features:
+            props = feat.get('properties') or {}
+            if not props:
+                continue
+            record = {
+                'datetime': props.get('datetime'),
+                'latitude': props.get('lat'),
+                'longitude': props.get('lon'),
+                'location_id': int(props.get('location_id', -1)),
+            }
+            has_data = False
+            for band in band_names:
+                v = props.get(band)
+                out_col = band_to_user_param[band]
+                if v is None:
+                    record[out_col] = None
+                    continue
+                try:
+                    v = float(v)
+                except (TypeError, ValueError):
+                    record[out_col] = None
+                    continue
+                # Unit conversions
+                if 'temperature' in band:
+                    v = v - 273.15
+                elif 'precipitation' in band:
+                    v = v * 1000
+                elif 'pressure' in band:
+                    v = v / 100
+                record[out_col] = round(v, 3)
+                has_data = True
+            if has_data:
+                all_records.append(record)
+
+        cur = chunk_end
 
     if not all_records:
         print("[WARNING] No ERA5 data retrieved")
@@ -483,6 +535,18 @@ def fetch_era5_data(
 
     df = pd.DataFrame(all_records)
     df['datetime'] = pd.to_datetime(df['datetime'])
+
+    # Derived: 2m relative humidity from Magnus-formula (Buck 1981), given
+    # T and Td already in degC after unit conversion above.
+    if need_rh and ('2m_temperature' in df.columns) and ('2m_dewpoint_temperature' in df.columns):
+        t_c = df['2m_temperature'].astype(float)
+        td_c = df['2m_dewpoint_temperature'].astype(float)
+        import numpy as np
+        e_s = 6.112 * np.exp((17.67 * t_c) / (t_c + 243.5))
+        e_a = 6.112 * np.exp((17.67 * td_c) / (td_c + 243.5))
+        rh = (100.0 * e_a / e_s).clip(0, 100)
+        df['2m_relative_humidity'] = rh.round(1)
+
     df = df.sort_values(['location_id', 'datetime']).reset_index(drop=True)
-    print(f"[SUCCESS] Retrieved {len(df)} ERA5 records (one row per timestamp)")
+    print(f"[SUCCESS] ERA5: {len(df):,} rows across {len(locations)} location(s)")
     return df

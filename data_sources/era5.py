@@ -89,42 +89,42 @@ def fetch_era5_data(
     if not credentials_dict:
         raise ValueError("Earth Engine credentials required. Please provide service account credentials.")
     
+    # Use DAILY_AGGR asset when the user asked for daily — 24x smaller
+    # payload than sampling hourly and averaging client-side. Monthly path
+    # keeps the client-side aggregation because DAILY_AGGR is close enough
+    # and there's no separate MONTHLY collection with all the same bands.
+    use_daily_aggregate = (temporal_resolution == "Daily")
+
     try:
         df = fetch_era5_ee(
             locations=locations,
             parameters=parameters,
             start_date=start_date,
             end_date=end_date,
-            credentials_dict=credentials_dict
+            credentials_dict=credentials_dict,
+            use_daily_aggregate=use_daily_aggregate,
         )
-        
-        # Aggregate to daily if requested
-        if temporal_resolution == "Daily" and not df.empty and 'datetime' in df.columns:
-            print("Aggregating hourly data to daily...")
-            
-            df['date'] = df['datetime'].dt.date
-            
-            # Group by date and location
+
+        # DAILY_AGGR already delivers per-day rows; only aggregate here if
+        # the user asked for Monthly on the hourly collection.
+        if temporal_resolution == "Monthly" and not df.empty and 'datetime' in df.columns:
+            print("Aggregating to monthly...")
+            df['month'] = df['datetime'].dt.to_period('M').dt.to_timestamp()
             numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
-            numeric_cols = [col for col in numeric_cols if col not in ['location_id', 'latitude', 'longitude']]
-            
-            agg_dict = {col: 'mean' for col in numeric_cols}
-            agg_dict.update({
-                'latitude': 'first',
-                'longitude': 'first',
-            })
-            
-            df = df.groupby(['location_id', 'date']).agg(agg_dict).reset_index()
-            df = df.rename(columns={'date': 'datetime'})
+            numeric_cols = [c for c in numeric_cols
+                            if c not in ['location_id', 'latitude', 'longitude']]
+            agg_dict = {c: 'mean' for c in numeric_cols}
+            agg_dict.update({'latitude': 'first', 'longitude': 'first'})
+            df = df.groupby(['location_id', 'month']).agg(agg_dict).reset_index()
+            df = df.rename(columns={'month': 'datetime'})
             df['datetime'] = pd.to_datetime(df['datetime'])
-        
+
         if not df.empty:
-            print(f"\n[SUCCESS] ERA5 fetch complete: {len(df)} records")
+            print(f"\n[SUCCESS] ERA5 fetch complete: {len(df):,} records")
             return df
-        else:
-            print("\n[WARNING] No data retrieved")
-            return pd.DataFrame()
-    
+        print("\n[WARNING] No data retrieved")
+        return pd.DataFrame()
+
     except Exception as e:
         print(f"\n[ERROR] Error fetching ERA5 data: {str(e)}")
         raise
