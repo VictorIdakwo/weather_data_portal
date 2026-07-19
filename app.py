@@ -9,7 +9,7 @@ import json
 from data_sources import (
     nasa_power, openweather, era5, modis, chirps, lulc, drought_indices, phenology,
     hydrology, soil_moisture, land_degradation, productivity, forest_biomass,
-    africa_stack,
+    africa_stack, population,
 )
 
 # Import utilities
@@ -165,6 +165,7 @@ data_sources = {
     "Vegetation Productivity (LAI/FAPAR/ET/GPP)": "productivity",
     "Forest Biomass & Structure": "forest_biomass",
     "Africa Stack (iSDA soils + WorldCereal)": "africa_stack",
+    "Population & Built-up": "population",
 }
 
 selected_source = st.sidebar.selectbox(
@@ -331,6 +332,21 @@ elif source_key == "soil_moisture":
 
     **Requires:** Earth Engine credentials.
     """)
+elif source_key == "population":
+    st.sidebar.success("""
+    👥 **Population & Built-up**
+
+    Per-polygon summary of three human-footprint gridded datasets:
+
+    - **WorldPop 2020** (100 m) — population count and density.
+    - **GHS-BUILT-S R2023A** (100 m, 2000 or 2020 epoch) — built-up
+      surface area (km²) and percent of polygon.
+    - **VIIRS nighttime lights** (500 m, monthly) — mean radiance
+      as a proxy for electrification / economic activity.
+
+    Input: upload a shapefile / KML polygon or pick an African
+    country / division.
+    """)
 elif source_key == "africa_stack":
     st.sidebar.success("""
     🌍 **Africa Stack** — iSDA soils + ESA WorldCereal
@@ -415,8 +431,34 @@ lulc_show_sankey = False
 lulc_drop_unchanged = False
 hydro_dataset = None
 forest_dataset = None
+pop_dataset = None
+pop_lights_start = None
+pop_lights_end = None
 
-if source_key == "forest_biomass":
+if source_key == "population":
+    st.sidebar.subheader("👥 Population & Built-up Dataset")
+    pop_dataset = st.sidebar.selectbox(
+        "Dataset",
+        options=population.get_available_datasets(),
+        index=0,
+        help="WorldPop for people. GHS-BUILT for built-up area. VIIRS for nighttime lights.",
+    )
+    ds_info_p = population.get_dataset_info(pop_dataset)
+    st.sidebar.caption(
+        f"**Scale:** {ds_info_p['scale']} m  •  "
+        f"**Year:** {ds_info_p['year'] or 'user-picked window'}  •  "
+        f"{ds_info_p['attribution']}"
+    )
+    if ds_info_p["family"] == "lights":
+        st.sidebar.markdown("**VIIRS window** (monthly composites averaged in range)")
+        from datetime import datetime as _dt, timedelta as _td
+        pop_lights_end = st.sidebar.date_input(
+            "End", value=_dt.now() - _td(days=30), key="pop_lights_end"
+        )
+        pop_lights_start = st.sidebar.date_input(
+            "Start", value=_dt.now() - _td(days=365), key="pop_lights_start"
+        )
+elif source_key == "forest_biomass":
     st.sidebar.subheader("🌳 Forest Biomass & Structure")
     forest_dataset = st.sidebar.selectbox(
         "Dataset",
@@ -1049,7 +1091,71 @@ st.markdown("""
 # (polygons, not points) and the output schema (per-polygon class composition,
 # no time axis) differ from the weather sources.
 
-if source_key == "africa_stack":
+if source_key == "population":
+    have_uploaded_gdf = st.session_state.uploaded_geodataframe is not None
+    have_admin_selection = (
+        location_method == "African Countries/Divisions"
+        and bool(locations_list)
+    )
+    pop_ready = bool(pop_dataset and (have_uploaded_gdf or have_admin_selection))
+    if pop_ready:
+        n_polys = (
+            len(st.session_state.uploaded_geodataframe)
+            if have_uploaded_gdf
+            else len({(loc[2].split('_point_')[0] if '_point_' in loc[2] else loc[2]) for loc in locations_list})
+        )
+        st.info(f"""
+        **Ready to fetch:**
+        - 👥 Data Source: {selected_source}
+        - 📚 Dataset: {pop_dataset}
+        - 🧭 AOI: {n_polys} polygon(s)
+        """)
+    if st.button("Fetch Population/Built Statistics", type="primary", disabled=not pop_ready, key="fetch_pop_btn"):
+        if not ee_credentials:
+            st.error("❌ Earth Engine credentials not found.")
+        else:
+            with st.spinner(f"Sampling {pop_dataset}..."):
+                try:
+                    if have_uploaded_gdf:
+                        aoi_gdf = st.session_state.uploaded_geodataframe.copy()
+                    else:
+                        admin_countries = list(selected_countries) if 'selected_countries' in dir() else []
+                        admin_divisions = (
+                            dict(selected_divisions) if 'selected_divisions' in dir() and selected_divisions else None
+                        )
+                        st.info("Resolving admin polygons via FAO GAUL 2015...")
+                        aoi_gdf = lulc.gdf_from_admin_selection(
+                            countries=admin_countries,
+                            divisions=admin_divisions,
+                            credentials_dict=ee_credentials,
+                        )
+                    date_range = None
+                    if population.get_dataset_info(pop_dataset)["family"] == "lights":
+                        date_range = (
+                            pop_lights_start.strftime("%Y-%m-%d") if pop_lights_start else "2023-01-01",
+                            pop_lights_end.strftime("%Y-%m-%d") if pop_lights_end else "2024-01-01",
+                        )
+                    df = population.fetch_population_stats_from_gdf(
+                        aoi_gdf=aoi_gdf,
+                        dataset_name=pop_dataset,
+                        credentials_dict=ee_credentials,
+                        date_range=date_range,
+                    )
+                    if df is not None and not df.empty:
+                        st.session_state.fetched_data = df
+                        st.session_state.current_data_source = f"{selected_source} | {pop_dataset}"
+                        st.session_state.lulc_change_long = None
+                        st.session_state.lulc_composition_long = None
+                        st.session_state.lulc_aoi_gdf = None
+                        st.success(f"✅ Population/built-up statistics for {len(df)} polygon(s).")
+                        st.caption(f"📜 {population.get_dataset_info(pop_dataset)['attribution']}")
+                        st.balloons()
+                    else:
+                        st.warning("⚠️ No polygons produced results.")
+                except Exception as e:
+                    st.error(f"❌ Population fetch failed: {e}")
+
+elif source_key == "africa_stack":
     have_uploaded_gdf = st.session_state.uploaded_geodataframe is not None
     have_admin_selection = (
         location_method == "African Countries/Divisions"
@@ -2057,8 +2163,13 @@ if st.session_state.fetched_data is not None:
         c in original_df.columns
         for c in ("SOIL_PH_0_20", "SOIL_OC_0_20", "CROPLAND_KM2")
     )
+    is_population_result = any(
+        c in original_df.columns
+        for c in ("POPULATION_TOTAL", "BUILT_UP_KM2", "MEAN_RADIANCE")
+    )
     is_lulc_result = (
-        not is_hydrology_result and not is_forest_result and not is_africa_result
+        not is_hydrology_result and not is_forest_result
+        and not is_africa_result and not is_population_result
     ) and (
         "polygon_id" in original_df.columns
         or "class_name" in original_df.columns
