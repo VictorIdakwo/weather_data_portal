@@ -8,7 +8,7 @@ import json
 # Import data source modules
 from data_sources import (
     nasa_power, openweather, era5, modis, chirps, lulc, drought_indices, phenology,
-    hydrology, soil_moisture, land_degradation,
+    hydrology, soil_moisture, land_degradation, productivity,
 )
 
 # Import utilities
@@ -161,6 +161,7 @@ data_sources = {
     "Hydrology (Global Surface Water)": "hydrology",
     "Soil Moisture (SMAP)": "soil_moisture",
     "Fire + Forest Loss (MODIS + FIRMS + Hansen)": "land_degradation",
+    "Vegetation Productivity (LAI/FAPAR/ET/GPP)": "productivity",
 }
 
 selected_source = st.sidebar.selectbox(
@@ -268,6 +269,26 @@ elif source_key == "drought_indices":
     **Requires:** Earth Engine credentials (already configured).
     **First fetch is slow** — 20–30 year baselines mean hundreds of
     Earth Engine calls per index family.
+    """)
+elif source_key == "productivity":
+    st.sidebar.success("""
+    🌿 **Vegetation Productivity (LAI / FAPAR / ET / GPP)**
+
+    Monthly per-location time series from three complementary MODIS
+    products, requestable together or independently.
+
+    **MOD15A2H (structure):**
+    - `LAI_M2M2` — Leaf Area Index (m²/m², monthly mean)
+    - `FAPAR` — Fraction of Absorbed PAR (0–1, monthly mean)
+
+    **MOD16A2 gap-filled (water flux):**
+    - `ET_MM` — actual evapotranspiration (mm/month)
+    - `PET_MM_MODIS` — potential evapotranspiration (mm/month)
+
+    **PML_V2 (carbon flux):**
+    - `GPP_GC_M2` — Gross Primary Productivity (gC/m²/month)
+
+    **Coverage:** 2000–present, 500 m native, monthly aggregate.
     """)
 elif source_key == "land_degradation":
     st.sidebar.success("""
@@ -492,6 +513,9 @@ else:
     elif source_key == "land_degradation":
         available_params = land_degradation.get_available_parameters()
         temporal_options = land_degradation.get_temporal_resolutions()
+    elif source_key == "productivity":
+        available_params = productivity.get_available_parameters()
+        temporal_options = productivity.get_temporal_resolutions()
     else:  # chirps
         available_params = chirps.get_available_parameters()
         temporal_options = chirps.get_temporal_resolutions()
@@ -567,6 +591,12 @@ else:
         data_latency_days = 90
         max_date = datetime.now() - timedelta(days=data_latency_days)
         default_start = datetime(datetime.now().year - 2, 1, 1)
+        default_end = max_date
+    elif source_key == "productivity":
+        # MOD15A2H / MOD16A2 latency ~30-60 days.
+        data_latency_days = 45
+        max_date = datetime.now() - timedelta(days=data_latency_days)
+        default_start = datetime(datetime.now().year - 3, 1, 1)
         default_end = max_date
     else:
         # Other sources - historical data with some latency
@@ -1457,6 +1487,20 @@ if source_key != "lulc" and st.button("Fetch Weather Data", type="primary", disa
                         df = pd.DataFrame()
                     else:
                         df = soil_moisture.fetch_smap_data(
+                            locations=location_coords,
+                            parameters=selected_params,
+                            start_date=start_date.strftime("%Y-%m-%d"),
+                            end_date=end_date.strftime("%Y-%m-%d"),
+                            temporal_resolution=temporal_resolution,
+                            credentials_dict=ee_credentials,
+                        )
+
+                elif source_key == "productivity":
+                    if not ee_credentials:
+                        st.error("❌ Earth Engine credentials not found.")
+                        df = pd.DataFrame()
+                    else:
+                        df = productivity.fetch_productivity_data(
                             locations=location_coords,
                             parameters=selected_params,
                             start_date=start_date.strftime("%Y-%m-%d"),
