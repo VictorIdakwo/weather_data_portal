@@ -8,6 +8,7 @@ import json
 # Import data source modules
 from data_sources import (
     nasa_power, openweather, era5, modis, chirps, lulc, drought_indices, phenology,
+    hydrology,
 )
 
 # Import utilities
@@ -157,6 +158,7 @@ data_sources = {
     "Land Cover (LULC)": "lulc",
     "Drought & Vegetation Indices": "drought_indices",
     "Vegetation Phenology (annual)": "phenology",
+    "Hydrology (Global Surface Water)": "hydrology",
 }
 
 selected_source = st.sidebar.selectbox(
@@ -265,6 +267,24 @@ elif source_key == "drought_indices":
     **First fetch is slow** — 20–30 year baselines mean hundreds of
     Earth Engine calls per index family.
     """)
+elif source_key == "hydrology":
+    st.sidebar.success("""
+    💦 **Hydrology (Global Surface Water)**
+
+    Per-polygon water statistics from **JRC Global Surface Water v1.4**
+    (Pekel et al. 2016, 30 m, 1984–2021).
+
+    **Outputs per AOI:**
+    - Total polygon area (km²)
+    - Water-ever area (any pixel with water history)
+    - **Permanent water** (occurrence > 90 %)
+    - **Seasonal water** (5 % < occurrence ≤ 90 %)
+    - Water percent of polygon
+    - Area-weighted mean occurrence and change in occurrence
+
+    Great for reservoirs, lakes, wetlands, and river-corridor
+    monitoring at national or watershed scale.
+    """)
 elif source_key == "lulc":
     st.sidebar.success("""
     🗺️ **Land Cover (LULC) via Google Earth Engine**
@@ -298,8 +318,28 @@ lulc_analysis_mode = None
 lulc_output_mode = None
 lulc_show_sankey = False
 lulc_drop_unchanged = False
+hydro_dataset = None
 
-if source_key == "lulc":
+if source_key == "hydrology":
+    st.sidebar.subheader("💦 Global Surface Water")
+    hydro_dataset = st.sidebar.selectbox(
+        "Dataset",
+        options=hydrology.get_available_datasets(),
+        index=0,
+        help="JRC Global Surface Water v1.4 (Pekel et al. 2016)",
+    )
+    ds_info_h = hydrology.get_dataset_info(hydro_dataset)
+    st.sidebar.caption(
+        f"**Period:** {ds_info_h['period']}  •  "
+        f"**Scale:** {ds_info_h['scale']} m  •  "
+        f"**Attribution:** {ds_info_h['attribution']}"
+    )
+    st.sidebar.info(
+        "**Input:** upload a shapefile / KML polygon, or pick an African "
+        "country / division. Output: one row per polygon with water "
+        "statistics."
+    )
+elif source_key == "lulc":
     st.sidebar.subheader("🗺️ LULC Dataset")
     lulc_dataset = st.sidebar.selectbox(
         "Dataset",
@@ -677,7 +717,7 @@ with left_col:
 
                 # Sampling summary is only meaningful for weather sources that
                 # actually query per-point. LULC uses the polygon directly.
-                if source_key != "lulc":
+                if source_key not in ("lulc", "hydrology"):
                     summary = get_sampling_summary(locations_dict)
                     if summary['sampling_points'] > 0:
                         st.info(f"""
@@ -688,9 +728,10 @@ with left_col:
                         - Weather data will be downloaded for all sampling points
                         """)
                 else:
+                    kind = "surface-water" if source_key == "hydrology" else "LULC"
                     st.info(
-                        f"🗺️ **{len(gdf)} polygon(s) ready for LULC analysis.** "
-                        "Land-cover composition is computed on the polygon directly — "
+                        f"🗺️ **{len(gdf)} polygon(s) ready for {kind} analysis.** "
+                        "Statistics are computed on the polygon directly — "
                         "no point sampling is used."
                     )
 
@@ -747,7 +788,7 @@ with left_col:
 
                 # Sampling summary is only meaningful for weather sources that
                 # actually query per-point. LULC uses the polygon directly.
-                if source_key != "lulc":
+                if source_key not in ("lulc", "hydrology"):
                     summary = get_sampling_summary(locations_dict)
                     if summary['sampling_points'] > 0:
                         st.info(f"""
@@ -758,9 +799,10 @@ with left_col:
                         - Weather data will be downloaded for all sampling points
                         """)
                 else:
+                    kind = "surface-water" if source_key == "hydrology" else "LULC"
                     st.info(
-                        f"🗺️ **{len(gdf)} polygon(s) ready for LULC analysis.** "
-                        "Land-cover composition is computed on the polygon directly — "
+                        f"🗺️ **{len(gdf)} polygon(s) ready for {kind} analysis.** "
+                        "Statistics are computed on the polygon directly — "
                         "no point sampling is used."
                     )
                 
@@ -815,9 +857,13 @@ with right_col:
 
 # Display selected locations
 if locations_list:
-    if source_key == "lulc" and st.session_state.uploaded_geodataframe is not None:
+    if (
+        source_key in ("lulc", "hydrology")
+        and st.session_state.uploaded_geodataframe is not None
+    ):
         n_poly = len(st.session_state.uploaded_geodataframe)
-        st.success(f"✅ {n_poly} polygon(s) ready for LULC analysis")
+        analysis_label = "LULC analysis" if source_key == "lulc" else "surface-water analysis"
+        st.success(f"✅ {n_poly} polygon(s) ready for {analysis_label}")
     else:
         st.success(f"✅ {len(locations_list)} location(s) selected")
 
@@ -849,7 +895,95 @@ st.markdown("""
 # (polygons, not points) and the output schema (per-polygon class composition,
 # no time axis) differ from the weather sources.
 
-if source_key == "lulc":
+if source_key == "hydrology":
+    have_uploaded_gdf = st.session_state.uploaded_geodataframe is not None
+    have_admin_selection = (
+        location_method == "African Countries/Divisions"
+        and bool(locations_list)
+    )
+    hydro_ready = bool(hydro_dataset and (have_uploaded_gdf or have_admin_selection))
+
+    if hydro_ready:
+        if have_uploaded_gdf:
+            n_polys = len(st.session_state.uploaded_geodataframe)
+            aoi_desc = f"{n_polys} polygon(s) from upload"
+        else:
+            n_polys = len(set(
+                loc[2].split('_point_')[0] if '_point_' in loc[2] else loc[2]
+                for loc in locations_list
+            ))
+            aoi_desc = f"{n_polys} admin division(s) (will resolve via FAO GAUL)"
+        st.info(f"""
+        **Ready to fetch:**
+        - 💦 Data Source: {selected_source}
+        - 📚 Dataset: {hydro_dataset}
+        - 🧭 AOI: {aoi_desc}
+        """)
+
+    fetch_hydro = st.button(
+        "Fetch Water Statistics",
+        type="primary",
+        disabled=not hydro_ready,
+        key="fetch_hydro_btn",
+    )
+    if fetch_hydro:
+        if not ee_credentials:
+            st.error("❌ Earth Engine credentials not found.")
+        else:
+            with st.spinner(f"Computing Global Surface Water statistics..."):
+                try:
+                    if have_uploaded_gdf:
+                        aoi_gdf = st.session_state.uploaded_geodataframe.copy()
+                    else:
+                        admin_countries = list(selected_countries) if 'selected_countries' in dir() else []
+                        admin_divisions = (
+                            dict(selected_divisions) if 'selected_divisions' in dir() and selected_divisions else None
+                        )
+                        st.info("Resolving admin polygons via FAO GAUL 2015...")
+                        aoi_gdf = lulc.gdf_from_admin_selection(
+                            countries=admin_countries,
+                            divisions=admin_divisions,
+                            credentials_dict=ee_credentials,
+                        )
+
+                    df = hydrology.fetch_gsw_stats_from_gdf(
+                        aoi_gdf=aoi_gdf,
+                        dataset_name=hydro_dataset,
+                        credentials_dict=ee_credentials,
+                    )
+                    if df is not None and not df.empty:
+                        st.session_state.fetched_data = df
+                        st.session_state.current_data_source = (
+                            f"{selected_source} | {hydro_dataset}"
+                        )
+                        # These session-state keys are checked by the LULC-family
+                        # export gating; clear them so hydrology output goes down
+                        # the plain CSV/JSON/Excel path.
+                        st.session_state.lulc_change_long = None
+                        st.session_state.lulc_composition_long = None
+                        st.session_state.lulc_aoi_gdf = None
+                        analytics.track_data_source_usage(
+                            data_source=f"{selected_source} | {hydro_dataset}",
+                            parameters=["gsw_stats"],
+                            locations_count=len(aoi_gdf),
+                            date_range=hydrology.get_dataset_info(hydro_dataset)["period"],
+                        )
+                        st.success(
+                            f"✅ Surface-water statistics computed for {len(df)} polygon(s)."
+                        )
+                        st.caption(
+                            f"📜 **Attribution:** "
+                            f"{hydrology.get_dataset_info(hydro_dataset)['attribution']}"
+                        )
+                        st.balloons()
+                    else:
+                        st.warning("⚠️ No polygons produced results.")
+                except Exception as e:
+                    st.error(f"❌ Hydrology fetch failed: {e}")
+                    if st.checkbox("🔍 View Error Details", key="hydro_err"):
+                        st.code(str(e))
+
+elif source_key == "lulc":
     # Determine if we have a usable polygon AOI
     have_uploaded_gdf = st.session_state.uploaded_geodataframe is not None
     have_admin_selection = (
@@ -1570,15 +1704,33 @@ if st.session_state.fetched_data is not None:
     
     # Data summary (use original data for accurate metrics). Branch on schema:
     # weather tables have location_id + date/datetime columns; LULC tables
-    # have polygon_id / polygon_name / class_name instead.
+    # have polygon_id + class_name/class_code; hydrology tables have
+    # polygon_id + water_ever_km2 (no class column).
     original_df = st.session_state.fetched_data
-    is_lulc_result = (
+    is_hydrology_result = "water_ever_km2" in original_df.columns
+    is_lulc_result = (not is_hydrology_result) and (
         "polygon_id" in original_df.columns
         or "class_name" in original_df.columns
         or any(c in original_df.columns for c in ("class_code", "polygon_name"))
     )
     col1, col2, col3, col4 = st.columns(4)
-    if is_lulc_result:
+    if is_hydrology_result:
+        with col1:
+            st.metric("Polygons", int(original_df["polygon_id"].nunique()))
+        with col2:
+            st.metric(
+                "Total water (km²)",
+                f"{float(original_df['water_ever_km2'].sum()):,.1f}",
+            )
+        with col3:
+            st.metric(
+                "Permanent (km²)",
+                f"{float(original_df['permanent_water_km2'].sum()):,.1f}",
+            )
+        with col4:
+            periods = original_df["period"].dropna().unique() if "period" in original_df.columns else []
+            st.metric("Period", periods[0] if len(periods) else "—")
+    elif is_lulc_result:
         with col1:
             st.metric("Total Rows", len(original_df))
         with col2:
@@ -1631,7 +1783,10 @@ if st.session_state.fetched_data is not None:
     # Generate base filename. Weather uses the requested date range;
     # LULC uses dataset+year (no date range applies).
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if is_lulc_result:
+    if is_hydrology_result:
+        ds_tag = (hydro_dataset or "gsw").replace(" ", "_").replace("/", "_")
+        base_filename = f"gsw_stats_{ds_tag}_{timestamp}"
+    elif is_lulc_result:
         ds_tag = (lulc_dataset or "lulc").replace(" ", "_").replace("/", "_")
         yr_tag = str(lulc_year or "year")
         base_filename = f"landcover_{ds_tag}_{yr_tag}_{timestamp}"
@@ -1683,7 +1838,14 @@ if st.session_state.fetched_data is not None:
     with col2:
         st.subheader("🗺️ Shapefile")
         st.caption("For GIS applications (QGIS/ArcGIS)")
-        if is_lulc_result:
+        if is_hydrology_result:
+            st.info(
+                "ℹ️ Hydrology results are per-polygon numeric summaries with no "
+                "geometry attached. Use CSV / JSON / Excel for the values, or "
+                "join them back to your original AOI shapefile on `polygon_id` "
+                "in QGIS."
+            )
+        elif is_lulc_result:
             lulc_aoi = st.session_state.get("lulc_aoi_gdf")
             is_change_res = st.session_state.get("lulc_change_long") is not None
             long_df = (
@@ -1831,7 +1993,12 @@ if st.session_state.fetched_data is not None:
 
         with col_a:
             st.markdown("**GeoJSON** (Geographic JSON)")
-            if is_lulc_result:
+            if is_hydrology_result:
+                st.info(
+                    "ℹ️ Hydrology results are per-polygon numeric summaries. "
+                    "Use CSV / JSON / Excel."
+                )
+            elif is_lulc_result:
                 lulc_aoi = st.session_state.get("lulc_aoi_gdf")
                 is_change_res = st.session_state.get("lulc_change_long") is not None
                 long_df = (
