@@ -60,10 +60,26 @@ BURNED_AREA_PARAMETERS: Dict[str, Dict[str, str]] = {
         "MEAN_BRIGHTNESS_K": "Mean brightness temperature at fire pixels (K)",
         "MEAN_CONFIDENCE": "Mean detection confidence (0-100)",
     },
+    "Forest loss (Hansen Global Forest Change)": {
+        "TREE_LOSS_KM2": "Annual tree-cover loss (km²)",
+        "PERCENT_LOSS": "Loss as percent of polygon (%)",
+        "FOREST_2000_KM2": "Year-2000 forest baseline area (km², >30 % tree cover)",
+        "PERCENT_FOREST_2000": "Year-2000 forest as percent of polygon (%)",
+    },
 }
 
 _BURNED_AREA_PARAM_KEYS = {"BURNED_AREA_KM2", "PERCENT_BURNED"}
 _FIRMS_PARAM_KEYS = {"FIRE_DETECTIONS", "MEAN_BRIGHTNESS_K", "MEAN_CONFIDENCE"}
+_HANSEN_PARAM_KEYS = {
+    "TREE_LOSS_KM2", "PERCENT_LOSS", "FOREST_2000_KM2", "PERCENT_FOREST_2000",
+}
+
+# Hansen v1.12 covers loss years 2001 - 2024. Bump this when the annual
+# release is refreshed.
+HANSEN_ASSET = "UMD/hansen/global_forest_change_2025_v1_13"
+HANSEN_MIN_YEAR = 2001
+HANSEN_MAX_YEAR = 2025
+HANSEN_TREECOVER_THRESHOLD_PCT = 30  # Standard "forest" definition
 
 TEMPORAL_RESOLUTIONS = ["Monthly"]
 
@@ -336,6 +352,125 @@ def _compute_firms_frame(
     return pd.DataFrame(rows)
 
 
+def _compute_hansen_frame(
+    fc, meta_by_id: Dict[int, Dict],
+    start_dt: datetime, end_dt: datetime, scale_m: int = 30,
+) -> pd.DataFrame:
+    """Annual tree-cover loss rows from Hansen. Returns columns
+    (date, latitude, longitude, location_id, polygon_name,
+    TREE_LOSS_KM2, PERCENT_LOSS, FOREST_2000_KM2, PERCENT_FOREST_2000).
+
+    Hansen is a single static image with bands:
+      treecover2000  0-100 percent canopy cover in year 2000
+      lossyear       1-24 (year - 2000) of loss detection; 0 = no loss
+      loss           binary mask of ever-lost pixels
+
+    Method: build 25 masks (one per loss year) plus a treecover2000>30
+    forest baseline mask, cat them into one image, sum-reduce per
+    polygon in TWO calls (one for the year-invariant baseline and
+    total area, one for the per-year loss counts).
+    """
+    hansen = ee.Image(HANSEN_ASSET)
+    lossyear = hansen.select("lossyear")
+    treecover = hansen.select("treecover2000")
+    pixel_area = ee.Image.pixelArea()
+
+    # -- Baseline + total area (single reduceRegions) ----------------------
+    forest_mask = treecover.gte(HANSEN_TREECOVER_THRESHOLD_PCT)
+    baseline_img = ee.Image.cat([
+        pixel_area.rename("total_area_m2"),
+        pixel_area.multiply(forest_mask).rename("forest_2000_m2"),
+    ])
+    try:
+        baseline_reduced = baseline_img.reduceRegions(
+            collection=fc,
+            reducer=ee.Reducer.sum(),
+            scale=scale_m,
+            tileScale=4,
+        )
+        baseline_feats = baseline_reduced.getInfo().get("features", [])
+    except Exception as e:
+        raise RuntimeError(f"Earth Engine Hansen baseline query failed: {e}") from e
+
+    total_by_id: Dict[int, float] = {}
+    forest_by_id: Dict[int, float] = {}
+    for feat in baseline_feats:
+        props = feat.get("properties") or {}
+        try:
+            pid = int(props.get("polygon_id"))
+        except (TypeError, ValueError):
+            continue
+        total_by_id[pid] = float(props.get("total_area_m2") or 0.0)
+        forest_by_id[pid] = float(props.get("forest_2000_m2") or 0.0)
+
+    # -- Per-year loss (single reduceRegions with a multi-band image) ------
+    y_from = max(HANSEN_MIN_YEAR, start_dt.year)
+    y_to = min(HANSEN_MAX_YEAR, end_dt.year)
+    if y_from > y_to:
+        return pd.DataFrame()
+
+    years = list(range(y_from, y_to + 1))
+    band_imgs = []
+    for y in years:
+        # Hansen encodes lossyear as (year - 2000), so 2001 -> 1, 2024 -> 24.
+        code = y - 2000
+        mask = lossyear.eq(code)
+        band_imgs.append(pixel_area.multiply(mask).rename(f"loss_{y}_m2"))
+    loss_img = ee.Image.cat(band_imgs)
+
+    try:
+        loss_reduced = loss_img.reduceRegions(
+            collection=fc,
+            reducer=ee.Reducer.sum(),
+            scale=scale_m,
+            tileScale=4,
+        )
+        loss_feats = loss_reduced.getInfo().get("features", [])
+    except Exception as e:
+        raise RuntimeError(f"Earth Engine Hansen loss query failed: {e}") from e
+
+    loss_by_polygon_year: Dict[Tuple[int, int], float] = {}
+    for feat in loss_feats:
+        props = feat.get("properties") or {}
+        try:
+            pid = int(props.get("polygon_id"))
+        except (TypeError, ValueError):
+            continue
+        for y in years:
+            loss_by_polygon_year[(pid, y)] = float(
+                props.get(f"loss_{y}_m2") or 0.0
+            )
+
+    print(
+        f"[Hansen] {len(meta_by_id)} polygon(s)  loss years "
+        f"{y_from}-{y_to}  @ {scale_m} m"
+    )
+
+    rows: List[Dict] = []
+    for pid, m in meta_by_id.items():
+        total_m2 = total_by_id.get(pid, 0.0)
+        forest_m2 = forest_by_id.get(pid, 0.0)
+        forest_km2 = round(forest_m2 / 1_000_000.0, 4)
+        forest_pct = round(forest_m2 / total_m2 * 100.0, 3) if total_m2 > 0 else 0.0
+        for y in years:
+            loss_m2 = loss_by_polygon_year.get((pid, y), 0.0)
+            loss_km2 = round(loss_m2 / 1_000_000.0, 4)
+            loss_pct = round(loss_m2 / total_m2 * 100.0, 4) if total_m2 > 0 else 0.0
+            rows.append({
+                "date": pd.Timestamp(year=y, month=1, day=1),
+                "latitude": m["latitude"],
+                "longitude": m["longitude"],
+                "location_id": pid,
+                "polygon_name": m["polygon_name"],
+                "TREE_LOSS_KM2": loss_km2,
+                "PERCENT_LOSS": loss_pct,
+                "FOREST_2000_KM2": forest_km2,
+                "PERCENT_FOREST_2000": forest_pct,
+            })
+
+    return pd.DataFrame(rows)
+
+
 def fetch_burned_area_from_gdf(
     aoi_gdf: gpd.GeoDataFrame,
     parameters: List[str],
@@ -369,28 +504,51 @@ def fetch_burned_area_from_gdf(
 
     need_burned = any(p in _BURNED_AREA_PARAM_KEYS for p in parameters)
     need_firms = any(p in _FIRMS_PARAM_KEYS for p in parameters)
+    need_hansen = any(p in _HANSEN_PARAM_KEYS for p in parameters)
 
     burned_frame = pd.DataFrame()
     firms_frame = pd.DataFrame()
+    hansen_frame = pd.DataFrame()
     if need_burned:
         burned_frame = _compute_burned_area_frame(fc, meta_by_id, start_dt, end_dt, scale_m)
     if need_firms:
         firms_frame = _compute_firms_frame(fc, meta_by_id, start_dt, end_dt)
+    if need_hansen:
+        hansen_frame = _compute_hansen_frame(fc, meta_by_id, start_dt, end_dt)
 
-    if burned_frame.empty and firms_frame.empty:
+    non_empty = [f for f in (burned_frame, firms_frame, hansen_frame) if not f.empty]
+    if not non_empty:
         return pd.DataFrame()
-    if burned_frame.empty:
-        combined = firms_frame
-    elif firms_frame.empty:
-        combined = burned_frame
-    else:
-        firms_slim = firms_frame[[
-            "location_id", "date",
-            "FIRE_DETECTIONS", "MEAN_BRIGHTNESS_K", "MEAN_CONFIDENCE",
-        ]]
-        combined = burned_frame.merge(
-            firms_slim, on=["location_id", "date"], how="outer",
+
+    # Merge one at a time on (location_id, date). Hansen is annual (Jan 1
+    # of each year), fire products are monthly (first-of-month). Outer join
+    # keeps both cadences visible in the merged output; users pick the
+    # cadence they want via the requested parameters.
+    combined = non_empty[0]
+    for frame in non_empty[1:]:
+        keep_extra_cols = [
+            c for c in frame.columns
+            if c not in ("date", "latitude", "longitude", "location_id", "polygon_name")
+        ]
+        combined = combined.merge(
+            frame[["location_id", "date"] + keep_extra_cols],
+            on=["location_id", "date"], how="outer",
         )
+    # After outer join we may lose latitude/longitude for date rows that
+    # only appear in one side. Restore from any non-empty frame.
+    for col in ("latitude", "longitude", "polygon_name"):
+        if col not in combined.columns:
+            combined[col] = None
+        for src in non_empty:
+            if col not in src.columns:
+                continue
+            lookup = src.set_index(["location_id", "date"])[col].to_dict()
+            mask = combined[col].isna()
+            if mask.any():
+                combined.loc[mask, col] = combined.loc[mask].apply(
+                    lambda r: lookup.get((r["location_id"], r["date"]), None),
+                    axis=1,
+                )
 
     keep_cols = ["date", "latitude", "longitude", "location_id", "polygon_name"]
     for p in parameters:

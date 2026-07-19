@@ -160,7 +160,7 @@ data_sources = {
     "Vegetation Phenology (annual)": "phenology",
     "Hydrology (Global Surface Water)": "hydrology",
     "Soil Moisture (SMAP)": "soil_moisture",
-    "Fire (MODIS burned area + FIRMS)": "land_degradation",
+    "Fire + Forest Loss (MODIS + FIRMS + Hansen)": "land_degradation",
 }
 
 selected_source = st.sidebar.selectbox(
@@ -271,23 +271,26 @@ elif source_key == "drought_indices":
     """)
 elif source_key == "land_degradation":
     st.sidebar.success("""
-    🔥 **Fire (MODIS burned area + FIRMS active fires)**
+    🔥 **Fire + Forest Loss (MODIS + FIRMS + Hansen)**
 
-    Monthly per-polygon fire statistics from two complementary
-    products, requestable together or independently.
+    Three complementary products, requestable together or
+    independently. All emit one row per polygon per time step.
 
-    **MODIS MCD64A1 (post-hoc burned area, ~60–90 day latency):**
-    - `BURNED_AREA_KM2` — burned pixels × pixel area
-    - `PERCENT_BURNED` — burned / polygon area × 100
+    **MODIS MCD64A1 (monthly burned area, ~60–90 day latency):**
+    - `BURNED_AREA_KM2`, `PERCENT_BURNED`
 
-    **FIRMS active fires (near-real-time, ~3-hour latency):**
-    - `FIRE_DETECTIONS` — count of fire pixel-days in the month
-    - `MEAN_BRIGHTNESS_K` — mean T21 brightness at fire pixels (K)
-    - `MEAN_CONFIDENCE` — mean detection confidence (0–100)
+    **FIRMS active fires (monthly aggregate, ~3-hour latency):**
+    - `FIRE_DETECTIONS`, `MEAN_BRIGHTNESS_K`, `MEAN_CONFIDENCE`
+
+    **Hansen Global Forest Change (annual, 30 m):**
+    - `TREE_LOSS_KM2`, `PERCENT_LOSS`
+    - `FOREST_2000_KM2`, `PERCENT_FOREST_2000` (year-2000 baseline
+      at >30 % canopy cover)
+    - Coverage: 2001–2025 loss years, refreshed annually.
 
     **Input:** upload a shapefile / KML polygon, or pick an African
     country / division. Point-only input is not supported for this
-    source — fire statistics need a real polygon.
+    source — these statistics need a real polygon.
     """)
 elif source_key == "soil_moisture":
     st.sidebar.success("""
