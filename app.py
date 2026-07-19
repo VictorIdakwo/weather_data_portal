@@ -6,7 +6,7 @@ import tempfile
 import json
 
 # Import data source modules
-from data_sources import nasa_power, openweather, era5, modis, chirps, lulc
+from data_sources import nasa_power, openweather, era5, modis, chirps, lulc, drought_indices
 
 # Import utilities
 from utils.africa_locations import (
@@ -153,6 +153,7 @@ data_sources = {
     "MODIS": "modis",
     "CHIRPS": "chirps",
     "Land Cover (LULC)": "lulc",
+    "Drought Indices (SPI)": "drought_indices",
 }
 
 selected_source = st.sidebar.selectbox(
@@ -218,6 +219,26 @@ elif source_key == "chirps":
 
     **Requirements:**
     Earth Engine service account credentials (provided)
+    """)
+elif source_key == "drought_indices":
+    st.sidebar.success("""
+    💧 **Drought Indices (SPI) via CHIRPS**
+
+    **What it computes:** Standardized Precipitation Index at
+    1 / 3 / 6 / 12 month rolling windows plus raw monthly
+    precipitation and anomaly against the 1991–2020 baseline.
+
+    **Interpretation:**
+    - SPI ≥ +2 → Extremely wet
+    - +1 to +2 → Moderately / severely wet
+    - -1 to +1 → Near normal
+    - -1 to -2 → Moderate / severe drought
+    - SPI ≤ -2 → Extreme drought
+
+    **Source:** CHIRPS Daily v2.0 aggregated to monthly totals,
+    gamma distribution fitted to the 1991–2020 climatology.
+
+    **Requires:** Earth Engine credentials (already configured).
     """)
 elif source_key == "lulc":
     st.sidebar.success("""
@@ -354,6 +375,9 @@ else:
     elif source_key == "modis":
         available_params = modis.get_available_parameters()
         temporal_options = modis.get_temporal_resolutions()
+    elif source_key == "drought_indices":
+        available_params = drought_indices.get_available_parameters()
+        temporal_options = drought_indices.get_temporal_resolutions()
     else:  # chirps
         available_params = chirps.get_available_parameters()
         temporal_options = chirps.get_temporal_resolutions()
@@ -404,6 +428,13 @@ else:
         max_date = datetime.now() - timedelta(days=data_latency_days)
         default_start = datetime.now() - timedelta(days=60)
         default_end = datetime.now() - timedelta(days=data_latency_days)
+    elif source_key == "drought_indices":
+        # CHIRPS monthly settles about a month after the month ends.
+        data_latency_days = 45
+        max_date = datetime.now() - timedelta(days=data_latency_days)
+        # Default to a 3-year window so SPI-12 has enough context to show trends.
+        default_start = datetime.now().replace(month=1, day=1) - timedelta(days=365 * 3)
+        default_end = max_date
     else:
         # Other sources - historical data with some latency
         data_latency_days = 3
@@ -1137,12 +1168,26 @@ if source_key != "lulc" and st.button("Fetch Weather Data", type="primary", disa
                             credentials_dict=ee_credentials,
                         )
                 
-                else:  # chirps
+                elif source_key == "chirps":
                     if not ee_credentials:
                         st.error("❌ Earth Engine credentials not found. Please add ee_credentials.json file.")
                         df = pd.DataFrame()
                     else:
                         df = chirps.fetch_chirps_data(
+                            locations=location_coords,
+                            parameters=selected_params,
+                            start_date=start_date.strftime("%Y-%m-%d"),
+                            end_date=end_date.strftime("%Y-%m-%d"),
+                            temporal_resolution=temporal_resolution,
+                            credentials_dict=ee_credentials,
+                        )
+
+                else:  # drought_indices
+                    if not ee_credentials:
+                        st.error("❌ Earth Engine credentials not found. Please add ee_credentials.json file.")
+                        df = pd.DataFrame()
+                    else:
+                        df = drought_indices.fetch_drought_data(
                             locations=location_coords,
                             parameters=selected_params,
                             start_date=start_date.strftime("%Y-%m-%d"),
