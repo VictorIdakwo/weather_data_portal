@@ -8,7 +8,7 @@ import json
 # Import data source modules
 from data_sources import (
     nasa_power, openweather, era5, modis, chirps, lulc, drought_indices, phenology,
-    hydrology,
+    hydrology, soil_moisture,
 )
 
 # Import utilities
@@ -159,6 +159,7 @@ data_sources = {
     "Drought & Vegetation Indices": "drought_indices",
     "Vegetation Phenology (annual)": "phenology",
     "Hydrology (Global Surface Water)": "hydrology",
+    "Soil Moisture (SMAP)": "soil_moisture",
 }
 
 selected_source = st.sidebar.selectbox(
@@ -266,6 +267,21 @@ elif source_key == "drought_indices":
     **Requires:** Earth Engine credentials (already configured).
     **First fetch is slow** — 20–30 year baselines mean hundreds of
     Earth Engine calls per index family.
+    """)
+elif source_key == "soil_moisture":
+    st.sidebar.success("""
+    🌊 **Soil Moisture (SMAP L4)**
+
+    Monthly-mean **surface (0–5 cm)** and **root-zone (0–100 cm)**
+    soil moisture at each point, plus anomalies against the 2015–2024
+    per-calendar-month climatology.
+
+    **Source:** SMAP L4 Global 9 km 3-hourly Soil Moisture (SPL4SMGP v7),
+    aggregated to monthly means server-side.
+
+    **Coverage:** 2015-04 → present, global.
+
+    **Requires:** Earth Engine credentials.
     """)
 elif source_key == "hydrology":
     st.sidebar.success("""
@@ -446,6 +462,9 @@ else:
     elif source_key == "phenology":
         available_params = phenology.get_available_parameters()
         temporal_options = phenology.get_temporal_resolutions()
+    elif source_key == "soil_moisture":
+        available_params = soil_moisture.get_available_parameters()
+        temporal_options = soil_moisture.get_temporal_resolutions()
     else:  # chirps
         available_params = chirps.get_available_parameters()
         temporal_options = chirps.get_temporal_resolutions()
@@ -510,6 +529,12 @@ else:
         max_date = datetime.now() - timedelta(days=data_latency_days)
         default_start = datetime(datetime.now().year - 5, 1, 1)
         default_end = datetime(datetime.now().year - 1, 12, 31)
+    elif source_key == "soil_moisture":
+        # SMAP L4 has ~7-day latency; default to a 3-year window.
+        data_latency_days = 7
+        max_date = datetime.now() - timedelta(days=data_latency_days)
+        default_start = datetime(datetime.now().year - 3, 1, 1)
+        default_end = max_date
     else:
         # Other sources - historical data with some latency
         data_latency_days = 3
@@ -1365,12 +1390,26 @@ if source_key != "lulc" and st.button("Fetch Weather Data", type="primary", disa
                             credentials_dict=ee_credentials,
                         )
 
-                else:  # phenology
+                elif source_key == "phenology":
                     if not ee_credentials:
                         st.error("❌ Earth Engine credentials not found. Please add ee_credentials.json file.")
                         df = pd.DataFrame()
                     else:
                         df = phenology.fetch_phenology_data(
+                            locations=location_coords,
+                            parameters=selected_params,
+                            start_date=start_date.strftime("%Y-%m-%d"),
+                            end_date=end_date.strftime("%Y-%m-%d"),
+                            temporal_resolution=temporal_resolution,
+                            credentials_dict=ee_credentials,
+                        )
+
+                else:  # soil_moisture
+                    if not ee_credentials:
+                        st.error("❌ Earth Engine credentials not found. Please add ee_credentials.json file.")
+                        df = pd.DataFrame()
+                    else:
+                        df = soil_moisture.fetch_smap_data(
                             locations=location_coords,
                             parameters=selected_params,
                             start_date=start_date.strftime("%Y-%m-%d"),
