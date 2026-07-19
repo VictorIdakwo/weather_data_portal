@@ -8,7 +8,7 @@ import json
 # Import data source modules
 from data_sources import (
     nasa_power, openweather, era5, modis, chirps, lulc, drought_indices, phenology,
-    hydrology, soil_moisture, land_degradation, productivity,
+    hydrology, soil_moisture, land_degradation, productivity, forest_biomass,
 )
 
 # Import utilities
@@ -162,6 +162,7 @@ data_sources = {
     "Soil Moisture (SMAP)": "soil_moisture",
     "Fire + Forest Loss (MODIS + FIRMS + Hansen)": "land_degradation",
     "Vegetation Productivity (LAI/FAPAR/ET/GPP)": "productivity",
+    "Forest Biomass & Structure": "forest_biomass",
 }
 
 selected_source = st.sidebar.selectbox(
@@ -328,6 +329,22 @@ elif source_key == "soil_moisture":
 
     **Requires:** Earth Engine credentials.
     """)
+elif source_key == "forest_biomass":
+    st.sidebar.success("""
+    🌳 **Forest Biomass & Structure**
+
+    Static per-polygon statistics from three global forest datasets:
+
+    - **ESA CCI Biomass v6.1** (100 m, 2015 or 2022 epoch) — mean AGB
+      in t/ha, total biomass in megatonnes, area with biomass.
+    - **Potapov Canopy Height 2020** (30 m) — mean tree-canopy height
+      in metres, area with trees > 3 m.
+    - **Global Mangrove Watch v3** (30 m, 2020) — mangrove area (km²)
+      and percent of polygon.
+
+    Input: upload a shapefile / KML polygon, or pick an African
+    country / division.
+    """)
 elif source_key == "hydrology":
     st.sidebar.success("""
     💦 **Hydrology (Global Surface Water)**
@@ -380,8 +397,23 @@ lulc_output_mode = None
 lulc_show_sankey = False
 lulc_drop_unchanged = False
 hydro_dataset = None
+forest_dataset = None
 
-if source_key == "hydrology":
+if source_key == "forest_biomass":
+    st.sidebar.subheader("🌳 Forest Biomass & Structure")
+    forest_dataset = st.sidebar.selectbox(
+        "Dataset",
+        options=forest_biomass.get_available_datasets(),
+        index=0,
+        help="Biomass: ESA CCI 2015/2022. Canopy: Potapov 2020. Mangroves: GMW v3 2020.",
+    )
+    ds_info_f = forest_biomass.get_dataset_info(forest_dataset)
+    st.sidebar.caption(
+        f"**Scale:** {ds_info_f['scale']} m  •  "
+        f"**Year:** {ds_info_f['year']}  •  "
+        f"{ds_info_f['attribution']}"
+    )
+elif source_key == "hydrology":
     st.sidebar.subheader("💦 Global Surface Water")
     hydro_dataset = st.sidebar.selectbox(
         "Dataset",
@@ -997,7 +1029,64 @@ st.markdown("""
 # (polygons, not points) and the output schema (per-polygon class composition,
 # no time axis) differ from the weather sources.
 
-if source_key == "hydrology":
+if source_key == "forest_biomass":
+    have_uploaded_gdf = st.session_state.uploaded_geodataframe is not None
+    have_admin_selection = (
+        location_method == "African Countries/Divisions"
+        and bool(locations_list)
+    )
+    fb_ready = bool(forest_dataset and (have_uploaded_gdf or have_admin_selection))
+    if fb_ready:
+        n_polys = (
+            len(st.session_state.uploaded_geodataframe)
+            if have_uploaded_gdf
+            else len({(loc[2].split('_point_')[0] if '_point_' in loc[2] else loc[2]) for loc in locations_list})
+        )
+        st.info(f"""
+        **Ready to fetch:**
+        - 🌳 Data Source: {selected_source}
+        - 📚 Dataset: {forest_dataset}
+        - 🧭 AOI: {n_polys} polygon(s)
+        """)
+    if st.button("Fetch Forest Statistics", type="primary", disabled=not fb_ready, key="fetch_fb_btn"):
+        if not ee_credentials:
+            st.error("❌ Earth Engine credentials not found.")
+        else:
+            with st.spinner(f"Computing {forest_dataset} statistics..."):
+                try:
+                    if have_uploaded_gdf:
+                        aoi_gdf = st.session_state.uploaded_geodataframe.copy()
+                    else:
+                        admin_countries = list(selected_countries) if 'selected_countries' in dir() else []
+                        admin_divisions = (
+                            dict(selected_divisions) if 'selected_divisions' in dir() and selected_divisions else None
+                        )
+                        st.info("Resolving admin polygons via FAO GAUL 2015...")
+                        aoi_gdf = lulc.gdf_from_admin_selection(
+                            countries=admin_countries,
+                            divisions=admin_divisions,
+                            credentials_dict=ee_credentials,
+                        )
+                    df = forest_biomass.fetch_biomass_stats_from_gdf(
+                        aoi_gdf=aoi_gdf,
+                        dataset_name=forest_dataset,
+                        credentials_dict=ee_credentials,
+                    )
+                    if df is not None and not df.empty:
+                        st.session_state.fetched_data = df
+                        st.session_state.current_data_source = f"{selected_source} | {forest_dataset}"
+                        st.session_state.lulc_change_long = None
+                        st.session_state.lulc_composition_long = None
+                        st.session_state.lulc_aoi_gdf = None
+                        st.success(f"✅ Forest statistics for {len(df)} polygon(s).")
+                        st.caption(f"📜 {forest_biomass.get_dataset_info(forest_dataset)['attribution']}")
+                        st.balloons()
+                    else:
+                        st.warning("⚠️ No polygons produced results.")
+                except Exception as e:
+                    st.error(f"❌ Forest-biomass fetch failed: {e}")
+
+elif source_key == "hydrology":
     have_uploaded_gdf = st.session_state.uploaded_geodataframe is not None
     have_admin_selection = (
         location_method == "African Countries/Divisions"
@@ -1884,7 +1973,13 @@ if st.session_state.fetched_data is not None:
     # polygon_id + water_ever_km2 (no class column).
     original_df = st.session_state.fetched_data
     is_hydrology_result = "water_ever_km2" in original_df.columns
-    is_lulc_result = (not is_hydrology_result) and (
+    is_forest_result = any(
+        c in original_df.columns
+        for c in ("AGB_MEAN_T_HA", "CANOPY_MEAN_M", "MANGROVE_KM2")
+    )
+    is_lulc_result = (
+        not is_hydrology_result and not is_forest_result
+    ) and (
         "polygon_id" in original_df.columns
         or "class_name" in original_df.columns
         or any(c in original_df.columns for c in ("class_code", "polygon_name"))
