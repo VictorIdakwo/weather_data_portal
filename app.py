@@ -8,7 +8,7 @@ import json
 # Import data source modules
 from data_sources import (
     nasa_power, openweather, era5, modis, chirps, lulc, drought_indices, phenology,
-    hydrology, soil_moisture,
+    hydrology, soil_moisture, land_degradation,
 )
 
 # Import utilities
@@ -160,6 +160,7 @@ data_sources = {
     "Vegetation Phenology (annual)": "phenology",
     "Hydrology (Global Surface Water)": "hydrology",
     "Soil Moisture (SMAP)": "soil_moisture",
+    "Burned Area (MODIS)": "land_degradation",
 }
 
 selected_source = st.sidebar.selectbox(
@@ -267,6 +268,24 @@ elif source_key == "drought_indices":
     **Requires:** Earth Engine credentials (already configured).
     **First fetch is slow** — 20–30 year baselines mean hundreds of
     Earth Engine calls per index family.
+    """)
+elif source_key == "land_degradation":
+    st.sidebar.success("""
+    🔥 **Burned Area (MODIS MCD64A1)**
+
+    Monthly burned area per polygon, at 500 m resolution.
+    Coverage: November 2000 → present.
+
+    **Outputs:**
+    - **BURNED_AREA_KM2** — burned pixels × pixel area
+    - **PERCENT_BURNED** — burned area / polygon area × 100
+
+    **Input:** upload a shapefile / KML polygon, or pick an African
+    country / division. Point-only input is not supported for this
+    source — burn extent needs a real polygon.
+
+    **Latency:** ~2–3 months. Results for the very latest month may
+    be zeros until MODIS finalises the product.
     """)
 elif source_key == "soil_moisture":
     st.sidebar.success("""
@@ -465,6 +484,9 @@ else:
     elif source_key == "soil_moisture":
         available_params = soil_moisture.get_available_parameters()
         temporal_options = soil_moisture.get_temporal_resolutions()
+    elif source_key == "land_degradation":
+        available_params = land_degradation.get_available_parameters()
+        temporal_options = land_degradation.get_temporal_resolutions()
     else:  # chirps
         available_params = chirps.get_available_parameters()
         temporal_options = chirps.get_temporal_resolutions()
@@ -534,6 +556,12 @@ else:
         data_latency_days = 7
         max_date = datetime.now() - timedelta(days=data_latency_days)
         default_start = datetime(datetime.now().year - 3, 1, 1)
+        default_end = max_date
+    elif source_key == "land_degradation":
+        # MCD64A1 typically has ~60-90 day latency.
+        data_latency_days = 90
+        max_date = datetime.now() - timedelta(days=data_latency_days)
+        default_start = datetime(datetime.now().year - 2, 1, 1)
         default_end = max_date
     else:
         # Other sources - historical data with some latency
@@ -742,7 +770,7 @@ with left_col:
 
                 # Sampling summary is only meaningful for weather sources that
                 # actually query per-point. LULC uses the polygon directly.
-                if source_key not in ("lulc", "hydrology"):
+                if source_key not in ("lulc", "hydrology", "land_degradation"):
                     summary = get_sampling_summary(locations_dict)
                     if summary['sampling_points'] > 0:
                         st.info(f"""
@@ -753,7 +781,12 @@ with left_col:
                         - Weather data will be downloaded for all sampling points
                         """)
                 else:
-                    kind = "surface-water" if source_key == "hydrology" else "LULC"
+                    kind_map = {
+                        "hydrology": "surface-water",
+                        "land_degradation": "burned-area",
+                        "lulc": "LULC",
+                    }
+                    kind = kind_map.get(source_key, "LULC")
                     st.info(
                         f"🗺️ **{len(gdf)} polygon(s) ready for {kind} analysis.** "
                         "Statistics are computed on the polygon directly — "
@@ -813,7 +846,7 @@ with left_col:
 
                 # Sampling summary is only meaningful for weather sources that
                 # actually query per-point. LULC uses the polygon directly.
-                if source_key not in ("lulc", "hydrology"):
+                if source_key not in ("lulc", "hydrology", "land_degradation"):
                     summary = get_sampling_summary(locations_dict)
                     if summary['sampling_points'] > 0:
                         st.info(f"""
@@ -824,7 +857,12 @@ with left_col:
                         - Weather data will be downloaded for all sampling points
                         """)
                 else:
-                    kind = "surface-water" if source_key == "hydrology" else "LULC"
+                    kind_map = {
+                        "hydrology": "surface-water",
+                        "land_degradation": "burned-area",
+                        "lulc": "LULC",
+                    }
+                    kind = kind_map.get(source_key, "LULC")
                     st.info(
                         f"🗺️ **{len(gdf)} polygon(s) ready for {kind} analysis.** "
                         "Statistics are computed on the polygon directly — "
@@ -883,11 +921,15 @@ with right_col:
 # Display selected locations
 if locations_list:
     if (
-        source_key in ("lulc", "hydrology")
+        source_key in ("lulc", "hydrology", "land_degradation")
         and st.session_state.uploaded_geodataframe is not None
     ):
         n_poly = len(st.session_state.uploaded_geodataframe)
-        analysis_label = "LULC analysis" if source_key == "lulc" else "surface-water analysis"
+        analysis_label = {
+            "lulc": "LULC analysis",
+            "hydrology": "surface-water analysis",
+            "land_degradation": "burned-area analysis",
+        }.get(source_key, "polygon analysis")
         st.success(f"✅ {n_poly} polygon(s) ready for {analysis_label}")
     else:
         st.success(f"✅ {len(locations_list)} location(s) selected")
@@ -1404,7 +1446,7 @@ if source_key != "lulc" and st.button("Fetch Weather Data", type="primary", disa
                             credentials_dict=ee_credentials,
                         )
 
-                else:  # soil_moisture
+                elif source_key == "soil_moisture":
                     if not ee_credentials:
                         st.error("❌ Earth Engine credentials not found. Please add ee_credentials.json file.")
                         df = pd.DataFrame()
@@ -1417,6 +1459,52 @@ if source_key != "lulc" and st.button("Fetch Weather Data", type="primary", disa
                             temporal_resolution=temporal_resolution,
                             credentials_dict=ee_credentials,
                         )
+
+                else:  # land_degradation (burned area) — polygon input required
+                    if not ee_credentials:
+                        st.error("❌ Earth Engine credentials not found.")
+                        df = pd.DataFrame()
+                    else:
+                        have_uploaded_gdf_ld = (
+                            st.session_state.uploaded_geodataframe is not None
+                        )
+                        have_admin_ld = (
+                            location_method == "African Countries/Divisions"
+                            and bool(locations_list)
+                        )
+                        if not (have_uploaded_gdf_ld or have_admin_ld):
+                            st.error(
+                                "❌ Burned Area needs polygon input. "
+                                "Upload a shapefile / KML, or pick an African "
+                                "country / division."
+                            )
+                            df = pd.DataFrame()
+                        else:
+                            if have_uploaded_gdf_ld:
+                                aoi_gdf_ld = st.session_state.uploaded_geodataframe.copy()
+                            else:
+                                admin_countries_ld = (
+                                    list(selected_countries)
+                                    if 'selected_countries' in dir() else []
+                                )
+                                admin_divisions_ld = (
+                                    dict(selected_divisions)
+                                    if 'selected_divisions' in dir() and selected_divisions
+                                    else None
+                                )
+                                st.info("Resolving admin polygons via FAO GAUL 2015...")
+                                aoi_gdf_ld = lulc.gdf_from_admin_selection(
+                                    countries=admin_countries_ld,
+                                    divisions=admin_divisions_ld,
+                                    credentials_dict=ee_credentials,
+                                )
+                            df = land_degradation.fetch_burned_area_from_gdf(
+                                aoi_gdf=aoi_gdf_ld,
+                                parameters=selected_params,
+                                start_date=start_date.strftime("%Y-%m-%d"),
+                                end_date=end_date.strftime("%Y-%m-%d"),
+                                credentials_dict=ee_credentials,
+                            )
                 
                 if df is not None and not df.empty:
                     # Add location names to the dataframe
