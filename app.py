@@ -9,7 +9,7 @@ import json
 from data_sources import (
     nasa_power, openweather, era5, modis, chirps, lulc, drought_indices, phenology,
     hydrology, soil_moisture, land_degradation, productivity, forest_biomass,
-    africa_stack, population,
+    africa_stack, population, air_quality,
 )
 
 # Import utilities
@@ -166,6 +166,7 @@ data_sources = {
     "Forest Biomass & Structure": "forest_biomass",
     "Africa Stack (iSDA soils + WorldCereal)": "africa_stack",
     "Population & Built-up": "population",
+    "Air Quality (TROPOMI + MODIS AOD)": "air_quality",
 }
 
 selected_source = st.sidebar.selectbox(
@@ -331,6 +332,19 @@ elif source_key == "soil_moisture":
     **Coverage:** 2015-04 → present, global.
 
     **Requires:** Earth Engine credentials.
+    """)
+elif source_key == "air_quality":
+    st.sidebar.success("""
+    🏭 **Air Quality (TROPOMI + MODIS AOD)**
+
+    Monthly per-location time series of:
+    - **NO₂, SO₂, CO** — Sentinel-5P TROPOMI tropospheric column
+      densities (mol/m²).
+    - **CH₄** — column volume mixing ratio (ppb).
+    - **AOD 550 nm** — MODIS MCD19A2 daily AOD, aggregated monthly.
+
+    **Coverage:** TROPOMI Sept 2018 → present, MODIS AOD 2000 →
+    present. Point time series, weather-schema output.
     """)
 elif source_key == "population":
     st.sidebar.success("""
@@ -601,6 +615,9 @@ else:
     elif source_key == "africa_stack":
         available_params = africa_stack.get_available_parameters()
         temporal_options = africa_stack.get_temporal_resolutions()
+    elif source_key == "air_quality":
+        available_params = air_quality.get_available_parameters()
+        temporal_options = air_quality.get_temporal_resolutions()
     elif source_key == "soil_moisture":
         available_params = soil_moisture.get_available_parameters()
         temporal_options = soil_moisture.get_temporal_resolutions()
@@ -691,6 +708,12 @@ else:
         data_latency_days = 45
         max_date = datetime.now() - timedelta(days=data_latency_days)
         default_start = datetime(datetime.now().year - 3, 1, 1)
+        default_end = max_date
+    elif source_key == "air_quality":
+        # TROPOMI has ~7-day latency; default to a 3-year window.
+        data_latency_days = 14
+        max_date = datetime.now() - timedelta(days=data_latency_days)
+        default_start = datetime(max(2019, datetime.now().year - 3), 1, 1)
         default_end = max_date
     else:
         # Other sources - historical data with some latency
@@ -1758,6 +1781,20 @@ if source_key != "lulc" and st.button("Fetch Weather Data", type="primary", disa
                         df = pd.DataFrame()
                     else:
                         df = soil_moisture.fetch_smap_data(
+                            locations=location_coords,
+                            parameters=selected_params,
+                            start_date=start_date.strftime("%Y-%m-%d"),
+                            end_date=end_date.strftime("%Y-%m-%d"),
+                            temporal_resolution=temporal_resolution,
+                            credentials_dict=ee_credentials,
+                        )
+
+                elif source_key == "air_quality":
+                    if not ee_credentials:
+                        st.error("❌ Earth Engine credentials not found.")
+                        df = pd.DataFrame()
+                    else:
+                        df = air_quality.fetch_air_quality_data(
                             locations=location_coords,
                             parameters=selected_params,
                             start_date=start_date.strftime("%Y-%m-%d"),
