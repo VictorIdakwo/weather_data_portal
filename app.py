@@ -9,6 +9,7 @@ import json
 from data_sources import (
     nasa_power, openweather, era5, modis, chirps, lulc, drought_indices, phenology,
     hydrology, soil_moisture, land_degradation, productivity, forest_biomass,
+    africa_stack,
 )
 
 # Import utilities
@@ -163,6 +164,7 @@ data_sources = {
     "Fire + Forest Loss (MODIS + FIRMS + Hansen)": "land_degradation",
     "Vegetation Productivity (LAI/FAPAR/ET/GPP)": "productivity",
     "Forest Biomass & Structure": "forest_biomass",
+    "Africa Stack (iSDA soils + WorldCereal)": "africa_stack",
 }
 
 selected_source = st.sidebar.selectbox(
@@ -328,6 +330,21 @@ elif source_key == "soil_moisture":
     **Coverage:** 2015-04 → present, global.
 
     **Requires:** Earth Engine credentials.
+    """)
+elif source_key == "africa_stack":
+    st.sidebar.success("""
+    🌍 **Africa Stack** — iSDA soils + ESA WorldCereal
+
+    Per-polygon summary of Africa-tuned reference layers:
+
+    - **iSDA-Africa soils** (30 m, 2021 v2): pH, organic carbon,
+      nitrogen, sand/clay/silt (0–20 cm topsoil; pH and OC also
+      available at 20–50 cm subsoil).
+    - **ESA WorldCereal 2021** (10 m): cropland area, active vs
+      irrigated cropland, cropland percent of polygon.
+
+    Input: upload a shapefile / KML polygon, or pick an African
+    country / division.
     """)
 elif source_key == "forest_biomass":
     st.sidebar.success("""
@@ -539,6 +556,9 @@ else:
     elif source_key == "phenology":
         available_params = phenology.get_available_parameters()
         temporal_options = phenology.get_temporal_resolutions()
+    elif source_key == "africa_stack":
+        available_params = africa_stack.get_available_parameters()
+        temporal_options = africa_stack.get_temporal_resolutions()
     elif source_key == "soil_moisture":
         available_params = soil_moisture.get_available_parameters()
         temporal_options = soil_moisture.get_temporal_resolutions()
@@ -1029,7 +1049,63 @@ st.markdown("""
 # (polygons, not points) and the output schema (per-polygon class composition,
 # no time axis) differ from the weather sources.
 
-if source_key == "forest_biomass":
+if source_key == "africa_stack":
+    have_uploaded_gdf = st.session_state.uploaded_geodataframe is not None
+    have_admin_selection = (
+        location_method == "African Countries/Divisions"
+        and bool(locations_list)
+    )
+    as_ready = bool(selected_params and (have_uploaded_gdf or have_admin_selection))
+    if as_ready:
+        n_polys = (
+            len(st.session_state.uploaded_geodataframe)
+            if have_uploaded_gdf
+            else len({(loc[2].split('_point_')[0] if '_point_' in loc[2] else loc[2]) for loc in locations_list})
+        )
+        st.info(f"""
+        **Ready to fetch:**
+        - 🌍 Data Source: {selected_source}
+        - 📋 Parameters: {len(selected_params)} selected
+        - 🧭 AOI: {n_polys} polygon(s)
+        """)
+    if st.button("Fetch Africa-Stack Statistics", type="primary", disabled=not as_ready, key="fetch_as_btn"):
+        if not ee_credentials:
+            st.error("❌ Earth Engine credentials not found.")
+        else:
+            with st.spinner("Sampling iSDA + WorldCereal..."):
+                try:
+                    if have_uploaded_gdf:
+                        aoi_gdf = st.session_state.uploaded_geodataframe.copy()
+                    else:
+                        admin_countries = list(selected_countries) if 'selected_countries' in dir() else []
+                        admin_divisions = (
+                            dict(selected_divisions) if 'selected_divisions' in dir() and selected_divisions else None
+                        )
+                        st.info("Resolving admin polygons via FAO GAUL 2015...")
+                        aoi_gdf = lulc.gdf_from_admin_selection(
+                            countries=admin_countries,
+                            divisions=admin_divisions,
+                            credentials_dict=ee_credentials,
+                        )
+                    df = africa_stack.fetch_africa_stack_from_gdf(
+                        aoi_gdf=aoi_gdf,
+                        parameters=selected_params,
+                        credentials_dict=ee_credentials,
+                    )
+                    if df is not None and not df.empty:
+                        st.session_state.fetched_data = df
+                        st.session_state.current_data_source = f"{selected_source}"
+                        st.session_state.lulc_change_long = None
+                        st.session_state.lulc_composition_long = None
+                        st.session_state.lulc_aoi_gdf = None
+                        st.success(f"✅ Africa-stack statistics for {len(df)} polygon(s).")
+                        st.balloons()
+                    else:
+                        st.warning("⚠️ No polygons produced results.")
+                except Exception as e:
+                    st.error(f"❌ Africa Stack fetch failed: {e}")
+
+elif source_key == "forest_biomass":
     have_uploaded_gdf = st.session_state.uploaded_geodataframe is not None
     have_admin_selection = (
         location_method == "African Countries/Divisions"
@@ -1977,8 +2053,12 @@ if st.session_state.fetched_data is not None:
         c in original_df.columns
         for c in ("AGB_MEAN_T_HA", "CANOPY_MEAN_M", "MANGROVE_KM2")
     )
+    is_africa_result = any(
+        c in original_df.columns
+        for c in ("SOIL_PH_0_20", "SOIL_OC_0_20", "CROPLAND_KM2")
+    )
     is_lulc_result = (
-        not is_hydrology_result and not is_forest_result
+        not is_hydrology_result and not is_forest_result and not is_africa_result
     ) and (
         "polygon_id" in original_df.columns
         or "class_name" in original_df.columns
