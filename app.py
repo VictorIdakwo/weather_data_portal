@@ -153,7 +153,7 @@ data_sources = {
     "MODIS": "modis",
     "CHIRPS": "chirps",
     "Land Cover (LULC)": "lulc",
-    "Drought Indices (SPI)": "drought_indices",
+    "Drought & Vegetation Indices": "drought_indices",
 }
 
 selected_source = st.sidebar.selectbox(
@@ -222,23 +222,24 @@ elif source_key == "chirps":
     """)
 elif source_key == "drought_indices":
     st.sidebar.success("""
-    💧 **Drought Indices (SPI) via CHIRPS**
+    💧 **Drought & Vegetation Indices**
 
-    **What it computes:** Standardized Precipitation Index at
-    1 / 3 / 6 / 12 month rolling windows plus raw monthly
-    precipitation and anomaly against the 1991–2020 baseline.
+    **SPI** (Standardized Precipitation Index) — 1 / 3 / 6 / 12 month
+    windows from CHIRPS, gamma-fitted against the 1991–2020 baseline.
+    Range ~[-3, +3]; ≤ -1.5 = drought, ≥ +1.5 = very wet.
 
-    **Interpretation:**
-    - SPI ≥ +2 → Extremely wet
-    - +1 to +2 → Moderately / severely wet
-    - -1 to +1 → Near normal
-    - -1 to -2 → Moderate / severe drought
-    - SPI ≤ -2 → Extreme drought
+    **VCI** (Vegetation Condition Index, 0–100) — MODIS NDVI vs. its
+    2001–2020 per-month min/max.
 
-    **Source:** CHIRPS Daily v2.0 aggregated to monthly totals,
-    gamma distribution fitted to the 1991–2020 climatology.
+    **TCI** (Temperature Condition Index, 0–100) — MODIS daytime LST
+    vs. its 2001–2020 per-month min/max (inverted: cool = healthy).
+
+    **VHI** (Vegetation Health Index, 0–100) = 0.5·VCI + 0.5·TCI.
+    < 40 = drought / vegetation stress.
 
     **Requires:** Earth Engine credentials (already configured).
+    **Note:** Vegetation indices need a 20-year MODIS baseline. First
+    fetch for a location can take several minutes.
     """)
 elif source_key == "lulc":
     st.sidebar.success("""
