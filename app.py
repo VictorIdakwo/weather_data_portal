@@ -11,6 +11,7 @@ from data_sources import (
     hydrology, soil_moisture, land_degradation, productivity, forest_biomass,
     africa_stack, population, air_quality,
 )
+from utils import cross_layer
 
 # Import utilities
 from utils.africa_locations import (
@@ -132,6 +133,8 @@ if "uploaded_geodataframe" not in st.session_state:
     st.session_state.uploaded_geodataframe = None
 if "lulc_change_long" not in st.session_state:
     st.session_state.lulc_change_long = None
+if "cross_layer_snapshots" not in st.session_state:
+    st.session_state.cross_layer_snapshots = {}  # label -> DataFrame
 if "lulc_composition_long" not in st.session_state:
     st.session_state.lulc_composition_long = None
 if "lulc_aoi_gdf" not in st.session_state:
@@ -2753,6 +2756,135 @@ if st.session_state.fetched_data is not None:
                     st.error(f"Raster clip failed: {e}")
                     if st.checkbox("🔍 Show error", key="lulc_clip_err"):
                         st.code(str(e))
+
+# ---------------------------------------------------------------------------
+# Cross-layer analytics (Phase 11)
+# ---------------------------------------------------------------------------
+st.markdown("---")
+with st.expander("🔗 **Cross-Layer Analytics** — snapshot two or more fetches and combine them", expanded=False):
+    st.markdown(
+        "Save the current fetch as a snapshot, run another fetch, then "
+        "come back here to join and derive ratios / differences / "
+        "correlations across the two."
+    )
+
+    col_a, col_b = st.columns([2, 1])
+    with col_a:
+        snap_label = st.text_input(
+            "Label for the current fetch",
+            value=st.session_state.get("current_data_source", "snapshot")[:60],
+            key="cross_snap_label",
+        )
+    with col_b:
+        if st.button(
+            "📌 Save snapshot",
+            key="cross_save_snap",
+            disabled=st.session_state.fetched_data is None,
+        ):
+            st.session_state.cross_layer_snapshots[snap_label] = (
+                st.session_state.fetched_data.copy()
+            )
+            st.success(f"Saved snapshot: {snap_label}")
+
+    snaps = st.session_state.cross_layer_snapshots
+    if snaps:
+        st.markdown(f"**Saved snapshots ({len(snaps)}):**")
+        for lbl, sdf in snaps.items():
+            schema = cross_layer.detect_schema(sdf)
+            st.markdown(
+                f"- **{lbl}** — {schema['n_rows']:,} rows, "
+                f"{len(schema['value_columns'])} value column(s), "
+                f"has_time={schema['has_time']}, has_location={schema['has_location']}, "
+                f"has_polygon={schema['has_polygon']}"
+            )
+        if st.button("🗑️ Clear all snapshots", key="cross_clear"):
+            st.session_state.cross_layer_snapshots = {}
+            st.rerun()
+
+    if len(snaps) >= 2:
+        st.markdown("---")
+        st.subheader("Join two snapshots")
+        labels = list(snaps.keys())
+        c1, c2 = st.columns(2)
+        with c1:
+            la = st.selectbox("Left snapshot", options=labels, key="cross_la")
+        with c2:
+            lb = st.selectbox(
+                "Right snapshot",
+                options=[x for x in labels if x != la],
+                key="cross_lb",
+            )
+        how = st.selectbox("Join type", options=["inner", "outer", "left"], index=0)
+        if st.button("🔗 Join", key="cross_do_join"):
+            try:
+                merged = cross_layer.cross_join(snaps[la], snaps[lb], how=how)
+                st.session_state["_cross_merged"] = merged
+                st.success(f"Joined: {len(merged):,} rows")
+            except Exception as e:
+                st.error(f"Join failed: {e}")
+
+    if st.session_state.get("_cross_merged") is not None:
+        merged = st.session_state["_cross_merged"]
+        st.markdown(f"**Merged table** ({len(merged):,} rows, {len(merged.columns)} cols):")
+        st.dataframe(merged.head(20))
+
+        # Derived-column workshop
+        st.markdown("**Derive a new column**")
+        numeric_cols = sorted([
+            c for c in merged.columns
+            if pd.api.types.is_numeric_dtype(merged[c])
+            and c not in cross_layer.RESERVED_JOIN_COLS
+        ])
+        if len(numeric_cols) >= 2:
+            op = st.selectbox("Operation", ["ratio (a/b)", "difference (a-b)", "product (a*b)", "z-score of a"])
+            colx, coly = st.columns(2)
+            with colx:
+                a_col = st.selectbox("A", options=numeric_cols, key="cx_a")
+            with coly:
+                b_col = st.selectbox(
+                    "B", options=numeric_cols,
+                    key="cx_b",
+                    disabled=(op == "z-score of a"),
+                )
+            out_name = st.text_input("Output column name", value="derived", key="cx_out")
+            if st.button("➕ Add derived column", key="cx_add_derived"):
+                try:
+                    if op.startswith("ratio"):
+                        merged[out_name] = cross_layer.derive_ratio(merged, a_col, b_col)
+                    elif op.startswith("difference"):
+                        merged[out_name] = cross_layer.derive_difference(merged, a_col, b_col)
+                    elif op.startswith("product"):
+                        merged[out_name] = cross_layer.derive_product(merged, a_col, b_col)
+                    else:
+                        group = ["location_id"] if "location_id" in merged.columns else None
+                        merged[out_name] = cross_layer.derive_zscore(merged, a_col, group_cols=group)
+                    st.session_state["_cross_merged"] = merged
+                    st.success(f"Added column `{out_name}`.")
+                except Exception as e:
+                    st.error(f"Derivation failed: {e}")
+
+            if st.button("📈 Compute per-location correlations", key="cx_corr"):
+                try:
+                    if "location_id" in merged.columns:
+                        corr_df = cross_layer.per_location_correlation(merged, a_col, b_col)
+                        st.dataframe(corr_df)
+                    else:
+                        st.warning("Correlation is only defined when a location_id column exists.")
+                except Exception as e:
+                    st.error(f"Correlation failed: {e}")
+
+        # Download the merged table
+        try:
+            merged_csv = merged.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "📥 Download merged CSV",
+                data=merged_csv,
+                file_name="cross_layer_merged.csv",
+                mime="text/csv",
+                key="cross_dl_csv",
+            )
+        except Exception:
+            pass
 
 # Footer
 st.markdown("---")
