@@ -63,10 +63,18 @@ SPI_PARAMETERS: Dict[str, Dict[str, str]] = {
         "SPI_6": "SPI-6 (6-month drought / wetness, medium-term)",
         "SPI_12": "SPI-12 (12-month drought / wetness, long-term)",
     },
-    "Precipitation": {
+    "Drought (SPEI, includes evapotranspiration)": {
+        "SPEI_1": "SPEI-1 (1-month P-PET drought / wetness)",
+        "SPEI_3": "SPEI-3 (3-month P-PET drought / wetness)",
+        "SPEI_6": "SPEI-6 (6-month P-PET drought / wetness)",
+        "SPEI_12": "SPEI-12 (12-month P-PET drought / wetness)",
+    },
+    "Precipitation & PET": {
         # Handy raw inputs to eyeball alongside the indices.
         "PRECIP_MM": "Monthly precipitation (mm)",
         "PRECIP_ANOM_MM": "Monthly precipitation anomaly (mm vs 1991-2020 mean)",
+        "PET_MM": "Monthly potential evapotranspiration (mm, TerraClimate)",
+        "WATER_BALANCE_MM": "Monthly water balance P - PET (mm)",
     },
     "Vegetation Health": {
         "VCI": "VCI - Vegetation Condition Index (NDVI 0-100)",
@@ -95,6 +103,7 @@ MODIS_CLIMATOLOGY_END = 2020
 SPI_MIN, SPI_MAX = -3.0, 3.0  # clip infinite tail values
 
 _SPI_PARAM_PREFIXES = ("SPI_", "PRECIP")
+_SPEI_PARAM_PREFIXES = ("SPEI_", "PET_", "WATER_BALANCE")
 _VEG_HEALTH_PARAMS = {"VCI", "TCI", "VHI", "NDVI_MEAN", "LST_DAY_C"}
 
 
@@ -377,6 +386,25 @@ def _monthly_modis_series(
     return df
 
 
+def _monthly_pet_series(
+    locations: List[Tuple[float, float]], start_year: int, end_year: int,
+) -> pd.DataFrame:
+    """TerraClimate monthly potential evapotranspiration (mm).
+    Raw storage is int16 scaled by 0.1; result is directly in mm/month.
+    Coverage: 1958-present, ~4.6 km, global.
+    """
+    return _monthly_modis_series(
+        locations=locations,
+        asset_id="IDAHO_EPSCOR/TERRACLIMATE",
+        band="pet",
+        out_field="pet_mm",
+        scale_m=4638,
+        start_year=start_year,
+        end_year=end_year,
+        value_scale=0.1,
+    )
+
+
 def _monthly_ndvi_series(
     locations: List[Tuple[float, float]], start_year: int, end_year: int,
 ) -> pd.DataFrame:
@@ -410,6 +438,68 @@ def _monthly_lst_series(
         value_scale=0.02,
         value_offset=-273.15,
     )
+
+
+# ---------------------------------------------------------------------------
+# SPEI computation (client-side, per location)
+# ---------------------------------------------------------------------------
+
+def _compute_spei_for_location(
+    monthly_df: pd.DataFrame,
+    window: int,
+    baseline_years: Tuple[int, int],
+    precip_col: str = "precip_mm",
+    pet_col: str = "pet_mm",
+) -> pd.DataFrame:
+    """Rolling SPEI-N for one location's monthly (P - PET) series.
+
+    Uses a normal-distribution fit per calendar month against the baseline
+    period, then transforms each month's rolling-window water balance to a
+    z-score. This is the widely-used 'SPEI-normal' variant — simpler than
+    the Vicente-Serrano log-logistic fit but with almost identical values
+    outside the extreme tails. Clipped to [-3, +3] like SPI.
+    """
+    df = monthly_df.copy().reset_index(drop=True)
+    df["water_balance"] = df[precip_col] - df[pet_col]
+
+    d = df["water_balance"].to_numpy(dtype=float)
+    n = len(d)
+
+    rolled = np.full(n, np.nan)
+    if window > 0 and n >= window:
+        cs = np.cumsum(np.concatenate([[0.0], np.nan_to_num(d, nan=0.0)]))
+        has_nan = pd.Series(np.isnan(d)).rolling(window).sum().to_numpy()
+        rolled[window - 1:] = cs[window:] - cs[:-window]
+        rolled[has_nan > 0] = np.nan
+    df[f"window_sum_D_{window}"] = rolled
+
+    yb0, yb1 = baseline_years
+    baseline_mask = (df["year"] >= yb0) & (df["year"] <= yb1)
+    df_baseline = df[baseline_mask]
+
+    fits_by_month: Dict[int, Tuple[float, float]] = {}
+    for m in range(1, 13):
+        vals = df_baseline.loc[
+            df_baseline["month"] == m, f"window_sum_D_{window}"
+        ].to_numpy(dtype=float)
+        vals = vals[~np.isnan(vals)]
+        if vals.size < 5:
+            fits_by_month[m] = (np.nan, np.nan)
+        else:
+            std = float(vals.std(ddof=1))
+            fits_by_month[m] = (float(vals.mean()), std if std > 0 else np.nan)
+
+    col = f"SPEI_{window}"
+    df[col] = np.nan
+    for i in range(n):
+        m = int(df.loc[i, "month"])
+        v = float(df.loc[i, f"window_sum_D_{window}"])
+        mu, sigma = fits_by_month.get(m, (np.nan, np.nan))
+        if np.isnan(v) or np.isnan(mu) or np.isnan(sigma) or sigma <= 0:
+            continue
+        z = (v - mu) / sigma
+        df.loc[i, col] = float(np.clip(z, SPI_MIN, SPI_MAX))
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +636,74 @@ def _compute_spi_frame(
     return frame
 
 
+def _compute_spei_frame(
+    locations: List[Tuple[float, float]],
+    parameters: List[str],
+    start_dt: datetime,
+    end_dt: datetime,
+) -> pd.DataFrame:
+    """SPEI + PET_MM + WATER_BALANCE_MM if requested. Fetches CHIRPS P
+    and TerraClimate PET independently — no data reuse with the SPI path
+    to keep the two frames decoupled."""
+    spei_params = [p for p in parameters if p.startswith(_SPEI_PARAM_PREFIXES)]
+    if not spei_params:
+        return pd.DataFrame()
+
+    windows_requested = [
+        int(p.split("_")[1]) for p in spei_params
+        if p.startswith("SPEI_") and p.split("_")[1].isdigit()
+    ]
+    max_window = max(windows_requested) if windows_requested else 1
+    warmup_start_year = min(
+        CLIMATOLOGY_START, start_dt.year - (max_window // 12) - 1
+    )
+    warmup_start_year = min(warmup_start_year, start_dt.year)
+    fetch_start_year = min(warmup_start_year, CLIMATOLOGY_START)
+    fetch_end_year = max(end_dt.year, CLIMATOLOGY_END)
+
+    print(
+        f"[SPEI] Locations={len(locations)}  "
+        f"target={start_dt.date()}..{end_dt.date()}  "
+        f"pulling CHIRPS P + TerraClimate PET {fetch_start_year}-{fetch_end_year}"
+    )
+
+    p_df = _monthly_chirps_series(locations, fetch_start_year, fetch_end_year)
+    pet_df = _monthly_pet_series(locations, fetch_start_year, fetch_end_year)
+    if p_df.empty or pet_df.empty:
+        return pd.DataFrame()
+
+    merged = p_df.merge(
+        pet_df[["location_id", "year", "month", "pet_mm"]],
+        on=["location_id", "year", "month"],
+        how="outer",
+    )
+
+    want_pet_raw = "PET_MM" in spei_params
+    want_wb_raw = "WATER_BALANCE_MM" in spei_params
+    windows_needed = sorted(set(windows_requested))
+
+    out_frames: List[pd.DataFrame] = []
+    for _loc_id, loc_df in merged.groupby("location_id"):
+        loc_df = loc_df.sort_values(["year", "month"]).reset_index(drop=True)
+        for w in windows_needed:
+            loc_df = _compute_spei_for_location(
+                loc_df, window=w,
+                baseline_years=(CLIMATOLOGY_START, CLIMATOLOGY_END),
+                precip_col="precip_mm", pet_col="pet_mm",
+            )
+        if want_pet_raw:
+            loc_df["PET_MM"] = loc_df["pet_mm"]
+        if want_wb_raw:
+            loc_df["WATER_BALANCE_MM"] = loc_df["precip_mm"] - loc_df["pet_mm"]
+        loc_df = _add_date_col(loc_df)
+        mask = (loc_df["date"] >= start_dt) & (loc_df["date"] <= end_dt)
+        out_frames.append(loc_df.loc[mask].copy())
+
+    if not out_frames:
+        return pd.DataFrame()
+    return pd.concat(out_frames, ignore_index=True)
+
+
 def _compute_veg_health_frame(
     locations: List[Tuple[float, float]],
     parameters: List[str],
@@ -673,42 +831,52 @@ def fetch_drought_data(
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
 
     spi_frame = _compute_spi_frame(locations, parameters, start_dt, end_dt)
+    spei_frame = _compute_spei_frame(locations, parameters, start_dt, end_dt)
     veg_frame = _compute_veg_health_frame(locations, parameters, start_dt, end_dt)
 
-    if spi_frame.empty and veg_frame.empty:
+    if spi_frame.empty and spei_frame.empty and veg_frame.empty:
         return pd.DataFrame()
 
-    # Merge the two side-by-side on (location_id, date). Prefer the union of
-    # rows so a fetch that requests only SPI or only vegetation still succeeds.
-    if spi_frame.empty:
-        result = veg_frame
-    elif veg_frame.empty:
-        result = spi_frame
-    else:
-        # Keep only the join keys + carrier columns from veg_frame to avoid
-        # duplicating latitude/longitude.
-        veg_keep = ["location_id", "date"] + [
-            c for c in veg_frame.columns
-            if c in ("VCI", "TCI", "VHI", "NDVI_MEAN", "LST_DAY_C")
-        ]
-        result = spi_frame.merge(
-            veg_frame[veg_keep],
-            on=["location_id", "date"],
-            how="outer",
+    # Successively merge whichever frames are non-empty, keyed on
+    # (location_id, date), outer join so a month present in any one frame
+    # survives to the output.
+    def _merge_pair(left, right, right_keep_cols):
+        if left.empty:
+            return right
+        if right.empty:
+            return left
+        return left.merge(
+            right[["location_id", "date"] + right_keep_cols],
+            on=["location_id", "date"], how="outer",
         )
-        # If SPI failed for some months but veg didn't (or vice versa),
-        # restore lat/lon from whichever side has them.
-        for col in ("latitude", "longitude"):
-            if col not in result.columns:
-                result[col] = np.nan
-            if col in spi_frame.columns:
-                lookup = spi_frame.set_index(["location_id", "date"])[col]
-                mask = result[col].isna()
-                if mask.any():
-                    result.loc[mask, col] = result.loc[mask].apply(
-                        lambda r: lookup.get((r["location_id"], r["date"]), np.nan),
-                        axis=1,
-                    )
+
+    result = spi_frame
+    result = _merge_pair(
+        result, spei_frame,
+        [c for c in spei_frame.columns
+         if c.startswith("SPEI_") or c in ("PET_MM", "WATER_BALANCE_MM")],
+    )
+    result = _merge_pair(
+        result, veg_frame,
+        [c for c in veg_frame.columns
+         if c in ("VCI", "TCI", "VHI", "NDVI_MEAN", "LST_DAY_C")],
+    )
+
+    # Restore lat/lon from any frame that has them, since a merge can leave
+    # NaN when a specific (location_id, date) is missing on one side.
+    for col in ("latitude", "longitude"):
+        if col not in result.columns:
+            result[col] = np.nan
+        for src in (spi_frame, spei_frame, veg_frame):
+            if src.empty or col not in src.columns:
+                continue
+            lookup = src.set_index(["location_id", "date"])[col].to_dict()
+            mask = result[col].isna()
+            if mask.any():
+                result.loc[mask, col] = result.loc[mask].apply(
+                    lambda r: lookup.get((r["location_id"], r["date"]), np.nan),
+                    axis=1,
+                )
 
     # Keep only what the caller asked for + the join columns.
     keep_cols = ["date", "latitude", "longitude", "location_id"]

@@ -224,22 +224,23 @@ elif source_key == "drought_indices":
     st.sidebar.success("""
     💧 **Drought & Vegetation Indices**
 
-    **SPI** (Standardized Precipitation Index) — 1 / 3 / 6 / 12 month
-    windows from CHIRPS, gamma-fitted against the 1991–2020 baseline.
-    Range ~[-3, +3]; ≤ -1.5 = drought, ≥ +1.5 = very wet.
+    **SPI** (1 / 3 / 6 / 12 month, CHIRPS) — precipitation-only
+    drought / wetness. Gamma-fit vs. 1991–2020 baseline.
 
-    **VCI** (Vegetation Condition Index, 0–100) — MODIS NDVI vs. its
-    2001–2020 per-month min/max.
+    **SPEI** (1 / 3 / 6 / 12 month, CHIRPS + TerraClimate PET) —
+    drought accounting for evaporative demand (P − PET). Catches
+    heat-driven drought that SPI misses. Normal-fit vs. 1991–2020.
+    Both indices: ≤ −1.5 = drought, ≥ +1.5 = very wet.
 
-    **TCI** (Temperature Condition Index, 0–100) — MODIS daytime LST
-    vs. its 2001–2020 per-month min/max (inverted: cool = healthy).
+    **VCI / TCI / VHI** (0–100, MODIS) — vegetation-health composites
+    from NDVI and daytime LST vs. 2001–2020 climatology. VHI < 40 =
+    drought / vegetation stress.
 
-    **VHI** (Vegetation Health Index, 0–100) = 0.5·VCI + 0.5·TCI.
-    < 40 = drought / vegetation stress.
+    **Raw inputs:** precipitation, PET, water balance, NDVI, LST.
 
     **Requires:** Earth Engine credentials (already configured).
-    **Note:** Vegetation indices need a 20-year MODIS baseline. First
-    fetch for a location can take several minutes.
+    **First fetch is slow** — 20–30 year baselines mean hundreds of
+    Earth Engine calls per index family.
     """)
 elif source_key == "lulc":
     st.sidebar.success("""
