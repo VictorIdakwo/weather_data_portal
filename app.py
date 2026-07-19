@@ -788,7 +788,7 @@ st.markdown("""
 # Location selection method
 location_method = st.radio(
     "Choose location selection method:",
-    options=["African Countries/Divisions", "Upload Shapefile", "Upload KML/KMZ"],
+    options=["African Countries/Divisions", "Upload Shapefile", "Upload KML/KMZ", "HydroBASINS Watershed"],
     horizontal=True,
 )
 
@@ -957,7 +957,7 @@ with left_col:
                 st.error(f"❌ Error processing shapefile: {str(e)}")
                 st.session_state.uploaded_geodataframe = None
 
-    else:  # Upload KML/KMZ
+    elif location_method == "Upload KML/KMZ":
         st.subheader("Upload KML/KMZ")
         st.markdown("""
         Upload a KML or KMZ file containing location data.
@@ -1038,6 +1038,63 @@ with left_col:
                 # Clean up temporary file if it exists
                 if 'kml_path' in locals() and os.path.exists(kml_path):
                     os.unlink(kml_path)
+
+    elif location_method == "HydroBASINS Watershed":
+        st.subheader("HydroBASINS Watershed")
+        st.markdown(
+            "Pick one or more African basins from HydroBASINS "
+            "(Lehner & Grill 2013). Level 4 = major basins, "
+            "Level 6/8 = sub-basins, Level 12 = smallest units."
+        )
+        from utils import hydrobasins as _hb
+        from utils.africa_locations import get_countries as _gc
+
+        hb_level = st.selectbox(
+            "Basin level", options=_hb.get_available_levels(),
+            index=1, help="Higher levels = smaller, more granular basins.",
+            key="hb_level",
+        )
+        hb_countries = st.multiselect(
+            "Filter by country",
+            options=_gc(),
+            default=["Nigeria"],
+            help="Basins whose bounding box intersects any selected country will be shown.",
+            key="hb_countries",
+        )
+        if st.button("🌊 Load basins", key="hb_load", disabled=not hb_countries):
+            if not ee_credentials:
+                st.error("❌ Earth Engine credentials required.")
+            else:
+                with st.spinner(f"Fetching HydroBASINS level {hb_level} for {', '.join(hb_countries)}..."):
+                    try:
+                        hb_gdf = _hb.gdf_from_watersheds(
+                            level=int(hb_level),
+                            countries=hb_countries,
+                            credentials_dict=ee_credentials,
+                            max_features=500,
+                        )
+                        if hb_gdf.empty:
+                            st.warning("No basins found for that filter.")
+                        else:
+                            st.session_state.uploaded_geodataframe = hb_gdf
+                            st.success(f"✅ Loaded {len(hb_gdf)} basin(s) at level {hb_level}.")
+                    except Exception as e:
+                        st.error(f"❌ HydroBASINS fetch failed: {e}")
+        if st.session_state.uploaded_geodataframe is not None:
+            gdf = st.session_state.uploaded_geodataframe
+            if "HYBAS_ID" in gdf.columns:
+                st.info(
+                    f"🌊 **{len(gdf)} basin(s) loaded.** "
+                    "Any polygon-input source (LULC, hydrology, forest, "
+                    "africa, population, land degradation) will use these."
+                )
+                if st.checkbox("Preview basins", key="hb_preview"):
+                    st.dataframe(gdf.drop(columns="geometry").head(20))
+                # Populate locations_list with centroids so the right-column
+                # satellite view + downstream point-source flow work.
+                for i, row in gdf.iterrows():
+                    c = row.geometry.centroid
+                    locations_list.append((c.y, c.x, row.get("name", f"HYBAS_{i}")))
 
 # Add satellite view in the right column
 with right_col:
