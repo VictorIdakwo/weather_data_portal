@@ -6,7 +6,9 @@ import tempfile
 import json
 
 # Import data source modules
-from data_sources import nasa_power, openweather, era5, modis, chirps, lulc, drought_indices
+from data_sources import (
+    nasa_power, openweather, era5, modis, chirps, lulc, drought_indices, phenology,
+)
 
 # Import utilities
 from utils.africa_locations import (
@@ -154,6 +156,7 @@ data_sources = {
     "CHIRPS": "chirps",
     "Land Cover (LULC)": "lulc",
     "Drought & Vegetation Indices": "drought_indices",
+    "Vegetation Phenology (annual)": "phenology",
 }
 
 selected_source = st.sidebar.selectbox(
@@ -219,6 +222,26 @@ elif source_key == "chirps":
 
     **Requirements:**
     Earth Engine service account credentials (provided)
+    """)
+elif source_key == "phenology":
+    st.sidebar.success("""
+    🌱 **Vegetation Phenology (annual)**
+
+    For each location and year, extracts seasonal timing and magnitude
+    from the MODIS 16-day NDVI series:
+
+    - **SOS_DOY / EOS_DOY** — Start / End of Season, day-of-year of the
+      NDVI ascending / descending crossing at 20 % of amplitude.
+    - **LOS_DAYS** — Length of Season (EOS − SOS).
+    - **PEAK_NDVI / PEAK_DOY** — annual maximum NDVI and its day-of-year.
+    - **NDVI_INTEGRAL** — sum of NDVI over the growing season
+      (proxy for total productivity).
+
+    **Source:** MODIS MOD13A1 (500 m, 16-day, 2000-present).
+
+    **Note:** single-season detection. Bimodal regimes (East African
+    long / short rains) collapse to the strongest peak. First fetch
+    for a location can take a minute per year of data.
     """)
 elif source_key == "drought_indices":
     st.sidebar.success("""
@@ -380,6 +403,9 @@ else:
     elif source_key == "drought_indices":
         available_params = drought_indices.get_available_parameters()
         temporal_options = drought_indices.get_temporal_resolutions()
+    elif source_key == "phenology":
+        available_params = phenology.get_available_parameters()
+        temporal_options = phenology.get_temporal_resolutions()
     else:  # chirps
         available_params = chirps.get_available_parameters()
         temporal_options = chirps.get_temporal_resolutions()
@@ -437,6 +463,13 @@ else:
         # Default to a 3-year window so SPI-12 has enough context to show trends.
         default_start = datetime.now().replace(month=1, day=1) - timedelta(days=365 * 3)
         default_end = max_date
+    elif source_key == "phenology":
+        # MOD13A1 composites have ~30-day latency; a full-season summary
+        # needs a completed calendar year.
+        data_latency_days = 30
+        max_date = datetime.now() - timedelta(days=data_latency_days)
+        default_start = datetime(datetime.now().year - 5, 1, 1)
+        default_end = datetime(datetime.now().year - 1, 12, 31)
     else:
         # Other sources - historical data with some latency
         data_latency_days = 3
@@ -1184,12 +1217,26 @@ if source_key != "lulc" and st.button("Fetch Weather Data", type="primary", disa
                             credentials_dict=ee_credentials,
                         )
 
-                else:  # drought_indices
+                elif source_key == "drought_indices":
                     if not ee_credentials:
                         st.error("❌ Earth Engine credentials not found. Please add ee_credentials.json file.")
                         df = pd.DataFrame()
                     else:
                         df = drought_indices.fetch_drought_data(
+                            locations=location_coords,
+                            parameters=selected_params,
+                            start_date=start_date.strftime("%Y-%m-%d"),
+                            end_date=end_date.strftime("%Y-%m-%d"),
+                            temporal_resolution=temporal_resolution,
+                            credentials_dict=ee_credentials,
+                        )
+
+                else:  # phenology
+                    if not ee_credentials:
+                        st.error("❌ Earth Engine credentials not found. Please add ee_credentials.json file.")
+                        df = pd.DataFrame()
+                    else:
+                        df = phenology.fetch_phenology_data(
                             locations=location_coords,
                             parameters=selected_params,
                             start_date=start_date.strftime("%Y-%m-%d"),
