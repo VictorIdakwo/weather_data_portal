@@ -449,85 +449,110 @@ def fetch_era5_data(
     if end_dt <= start_dt:
         return pd.DataFrame()
 
-    # Build ONE FeatureCollection for all points. Every reduceRegions call
-    # now samples every point in one round-trip instead of iterating
-    # locations sequentially (which for 500+ points was the primary
-    # bottleneck making the fetch feel non-terminating).
-    features = []
-    for idx, (lat, lon) in enumerate(locations):
-        pt = ee.Geometry.Point([lon, lat])
-        features.append(ee.Feature(pt, {
-            'location_id': int(idx),
-            'lat': float(lat),
-            'lon': float(lon),
-        }))
-    fc = ee.FeatureCollection(features)
-
-    # server-side sample_image: for each image in the filtered collection,
-    # sample all points in one reduceRegions call, then set the timestamp
-    # on each returned feature. flatten() turns a FeatureCollection of
-    # FeatureCollections into one flat list.
-    def _sample_image(image):
-        sampled = image.reduceRegions(
-            collection=fc,
-            reducer=ee.Reducer.first(),
-            scale=11132,
-            tileScale=4,
+    # Batch points to stay under Earth Engine's 5,000-elements-per-getInfo
+    # limit. Every reduceRegions call now samples ALL points in a batch
+    # in one round-trip. If a chunk's expected feature count (batch_size
+    # * images_per_chunk) would exceed the limit we shrink batch_size
+    # accordingly. Effective throughput: one HTTP round-trip per
+    # (batch, chunk) pair.
+    EE_GETINFO_MAX = 5000
+    # For DAILY_AGGR: images per chunk == chunk_days.
+    # For HOURLY: images per chunk == chunk_days * 24.
+    images_per_chunk = chunk_days * (1 if use_daily_aggregate else 24)
+    # Leave a small headroom so borderline cases don't hit the wall.
+    max_batch_size = max(1, (EE_GETINFO_MAX - 200) // max(images_per_chunk, 1))
+    batch_size = min(len(locations), max_batch_size)
+    if batch_size < len(locations):
+        print(
+            f"  [BATCHING] {len(locations)} points split into batches of "
+            f"{batch_size} (images/chunk={images_per_chunk}, "
+            f"batch*images={batch_size * images_per_chunk} < {EE_GETINFO_MAX})"
         )
-        ts = ee.Date(image.get('system:time_start')).format(ts_fmt)
-        return sampled.map(lambda f: f.set('datetime', ts))
+
+    def _batch_fc(offset, batch_locs):
+        feats = []
+        for j, (lat, lon) in enumerate(batch_locs):
+            pt = ee.Geometry.Point([lon, lat])
+            feats.append(ee.Feature(pt, {
+                'location_id': int(offset + j),
+                'lat': float(lat),
+                'lon': float(lon),
+            }))
+        return ee.FeatureCollection(feats)
+
+    def _sample_image_factory(fc):
+        def _sample_image(image):
+            sampled = image.reduceRegions(
+                collection=fc,
+                reducer=ee.Reducer.first(),
+                scale=11132,
+                tileScale=4,
+            )
+            ts = ee.Date(image.get('system:time_start')).format(ts_fmt)
+            return sampled.map(lambda f: f.set('datetime', ts))
+        return _sample_image
 
     all_records = []
-    cur = start_dt
-    while cur < end_dt:
-        chunk_end = min(cur + timedelta(days=chunk_days), end_dt)
-        cs, ce = cur.strftime('%Y-%m-%d'), chunk_end.strftime('%Y-%m-%d')
+    n_batches = (len(locations) + batch_size - 1) // batch_size
+    for batch_idx in range(n_batches):
+        offset = batch_idx * batch_size
+        batch = locations[offset:offset + batch_size]
+        fc = _batch_fc(offset, batch)
+        sample_fn = _sample_image_factory(fc)
 
-        try:
-            filtered = collection.filterDate(cs, ce)
-            all_samples = filtered.map(_sample_image).flatten()
-            server_features = all_samples.getInfo().get('features', [])
-            print(f"    chunk {cs}..{ce}: {len(server_features):,} records")
-        except Exception as e:
-            print(f"    [ERROR] chunk {cs}..{ce}: {e}")
-            cur = chunk_end
-            continue
+        if n_batches > 1:
+            print(f"  batch {batch_idx + 1}/{n_batches}  points {offset}..{offset + len(batch) - 1}")
 
-        for feat in server_features:
-            props = feat.get('properties') or {}
-            if not props:
+        cur = start_dt
+        while cur < end_dt:
+            chunk_end = min(cur + timedelta(days=chunk_days), end_dt)
+            cs, ce = cur.strftime('%Y-%m-%d'), chunk_end.strftime('%Y-%m-%d')
+
+            try:
+                filtered = collection.filterDate(cs, ce)
+                all_samples = filtered.map(sample_fn).flatten()
+                server_features = all_samples.getInfo().get('features', [])
+                print(f"    chunk {cs}..{ce}: {len(server_features):,} records")
+            except Exception as e:
+                print(f"    [ERROR] chunk {cs}..{ce}: {e}")
+                cur = chunk_end
                 continue
-            record = {
-                'datetime': props.get('datetime'),
-                'latitude': props.get('lat'),
-                'longitude': props.get('lon'),
-                'location_id': int(props.get('location_id', -1)),
-            }
-            has_data = False
-            for band in band_names:
-                v = props.get(band)
-                out_col = band_to_user_param[band]
-                if v is None:
-                    record[out_col] = None
-                    continue
-                try:
-                    v = float(v)
-                except (TypeError, ValueError):
-                    record[out_col] = None
-                    continue
-                # Unit conversions
-                if 'temperature' in band:
-                    v = v - 273.15
-                elif 'precipitation' in band:
-                    v = v * 1000
-                elif 'pressure' in band:
-                    v = v / 100
-                record[out_col] = round(v, 3)
-                has_data = True
-            if has_data:
-                all_records.append(record)
 
-        cur = chunk_end
+            for feat in server_features:
+                props = feat.get('properties') or {}
+                if not props:
+                    continue
+                record = {
+                    'datetime': props.get('datetime'),
+                    'latitude': props.get('lat'),
+                    'longitude': props.get('lon'),
+                    'location_id': int(props.get('location_id', -1)),
+                }
+                has_data = False
+                for band in band_names:
+                    v = props.get(band)
+                    out_col = band_to_user_param[band]
+                    if v is None:
+                        record[out_col] = None
+                        continue
+                    try:
+                        v = float(v)
+                    except (TypeError, ValueError):
+                        record[out_col] = None
+                        continue
+                    # Unit conversions
+                    if 'temperature' in band:
+                        v = v - 273.15
+                    elif 'precipitation' in band:
+                        v = v * 1000
+                    elif 'pressure' in band:
+                        v = v / 100
+                    record[out_col] = round(v, 3)
+                    has_data = True
+                if has_data:
+                    all_records.append(record)
+
+            cur = chunk_end
 
     if not all_records:
         print("[WARNING] No ERA5 data retrieved")
