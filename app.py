@@ -12,6 +12,7 @@ from data_sources import (
     africa_stack, population, air_quality,
 )
 from utils import cross_layer
+from utils import reproducibility
 
 # Import utilities
 from utils.africa_locations import (
@@ -2756,6 +2757,81 @@ if st.session_state.fetched_data is not None:
                     st.error(f"Raster clip failed: {e}")
                     if st.checkbox("🔍 Show error", key="lulc_clip_err"):
                         st.code(str(e))
+
+# ---------------------------------------------------------------------------
+# Reproducibility (Phase 12): provenance JSON + Jupyter notebook download
+# ---------------------------------------------------------------------------
+if st.session_state.fetched_data is not None:
+    st.markdown("---")
+    with st.expander("🧾 **Reproducibility** — provenance JSON + Jupyter notebook", expanded=False):
+        st.markdown(
+            "Download a compact record of the current fetch (STAC-lite JSON) "
+            "and a stand-alone Jupyter notebook that re-runs the same query."
+        )
+        try:
+            _df_cur = st.session_state.fetched_data
+            _prov = reproducibility.build_provenance_record(
+                source=st.session_state.get("current_data_source", ""),
+                parameters=(
+                    list(selected_params)
+                    if 'selected_params' in dir() and selected_params else None
+                ),
+                dataset=(
+                    lulc_dataset if source_key == "lulc" else (
+                        hydro_dataset if source_key == "hydrology" else (
+                            forest_dataset if source_key == "forest_biomass" else (
+                                pop_dataset if source_key == "population" else None
+                            )
+                        )
+                    )
+                ),
+                start_date=(
+                    start_date.strftime("%Y-%m-%d")
+                    if 'start_date' in dir() and start_date else None
+                ),
+                end_date=(
+                    end_date.strftime("%Y-%m-%d")
+                    if 'end_date' in dir() and end_date else None
+                ),
+                year=int(lulc_year) if 'lulc_year' in dir() and lulc_year else None,
+                year_to=int(lulc_year_to) if 'lulc_year_to' in dir() and lulc_year_to else None,
+                temporal_resolution=(
+                    temporal_resolution if 'temporal_resolution' in dir() else None
+                ),
+                n_rows=len(_df_cur),
+                n_locations=int(_df_cur["location_id"].nunique()) if "location_id" in _df_cur.columns else None,
+                n_polygons=int(_df_cur["polygon_id"].nunique()) if "polygon_id" in _df_cur.columns else None,
+                columns=list(_df_cur.columns),
+                attribution=(
+                    _df_cur["attribution"].dropna().iloc[0]
+                    if "attribution" in _df_cur.columns and not _df_cur["attribution"].dropna().empty
+                    else None
+                ),
+            )
+            import json as _json
+            prov_bytes = _json.dumps(_prov, indent=2, default=str).encode("utf-8")
+            nb_bytes = reproducibility.build_reproduction_notebook(_prov).encode("utf-8")
+
+            r1, r2 = st.columns(2)
+            with r1:
+                st.download_button(
+                    "📄 Provenance JSON",
+                    data=prov_bytes,
+                    file_name="provenance.json",
+                    mime="application/json",
+                    key="repro_json",
+                )
+            with r2:
+                st.download_button(
+                    "📓 Reproduction notebook (.ipynb)",
+                    data=nb_bytes,
+                    file_name="reproduction_notebook.ipynb",
+                    mime="application/x-ipynb+json",
+                    key="repro_nb",
+                )
+            st.caption("The notebook expects `ee_credentials.json` next to it and this repo cloned.")
+        except Exception as e:
+            st.info(f"Provenance unavailable: {e}")
 
 # ---------------------------------------------------------------------------
 # Cross-layer analytics (Phase 11)
