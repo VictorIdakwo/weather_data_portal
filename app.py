@@ -2848,7 +2848,7 @@ with st.expander("🔗 **Cross-Layer Analytics** — snapshot two or more fetche
     with col_a:
         snap_label = st.text_input(
             "Label for the current fetch",
-            value=st.session_state.get("current_data_source", "snapshot")[:60],
+            value=(st.session_state.get("current_data_source") or "snapshot")[:60],
             key="cross_snap_label",
         )
     with col_b:
